@@ -1,0 +1,17 @@
+package repository
+
+import (
+	"time"
+
+	"kitchen-api/internal/domain"
+)
+
+type OrderEvent struct {
+	ID        int64               `db:"id"`
+	OrderID   int64               `db:"order_id"`
+	OldStatus *domain.OrderStatus `db:"old_status"`
+	NewStatus domain.OrderStatus  `db:"new_status"`
+	CreatedAt time.Time           `db:"created_at"`
+}
+
+// TODO: DTO and mappers for Domain-Repository and Repository-Domain

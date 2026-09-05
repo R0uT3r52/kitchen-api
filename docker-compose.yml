@@ -1,0 +1,68 @@
+name: r0ut3r-kitchen-api
+
+services:
+  database:
+    image: postgres:16.3-alpine
+    env_file: .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kitchen-network
+
+  migrate:
+    image: migrate/migrate
+    env_file: .env
+    depends_on:
+      database:
+        condition: service_healthy
+    networks:
+      - kitchen-network
+    volumes:
+      - ./migrations/:/migrations
+    command: ["-path", "/migrations/", "-database", "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}?sslmode=disable", "up"]
+
+  kitchen-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-8080}:8080"
+    env_file: .env
+    environment:
+      - DB_HOST=database
+      - DB_PORT=5432
+      - DB_USER=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_NAME=${POSTGRES_DB}
+      - PORT=8080
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - kitchen-network
+
+  restaurant-example:
+    build:
+      context: ./restaurant-example
+      dockerfile: Dockerfile
+    environment:
+      - API_URL=http://kitchen-api:8080
+      - PARTNER_API_KEY=partner_api_key_dolce_vita
+    depends_on:
+      kitchen-api:
+        condition: service_started
+    networks:
+      - kitchen-network
+
+
+volumes:
+  postgres_data:
+
+networks:
+  kitchen-network:
+    driver: bridge

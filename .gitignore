@@ -1,0 +1,8 @@
+bin/
+build/
+.env
+*.exe
+.idea/
+.vs*/
+scope.md
+backend-trainee-assignment-autumn-2026.md
