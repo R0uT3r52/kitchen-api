@@ -3,14 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"kitchen-api/internal/repository"
+	"kitchen-api/internal/web"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-
-	"kitchen-api/internal/web"
 )
 
 func main() {
@@ -19,11 +19,17 @@ func main() {
 		port = "8080"
 	}
 
-	// TODO: implement pgxpool
-	// dbPool, err := pgxpool.New(context.Background(), dsn)
+	dbPool, err := repository.GetDB(context.Background())
+	if err != nil {
+		log.Fatalf("failed to init db: %v", err)
+	}
+	defer dbPool.Close()
 
-	// TODO: implement repo and domain use-case
-	handler := web.NewHandler(nil, nil)
+	repo := repository.NewRepo(dbPool)
+	_ = repo // TODO: pass to use-cases
+
+	// TODO: implement domain use-case using repo
+	handler := web.NewHandler(nil, nil) // pass usecases
 
 	server := &http.Server{
 		Addr:         ":" + port,

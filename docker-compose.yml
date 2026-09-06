@@ -52,7 +52,7 @@ services:
       dockerfile: Dockerfile
     environment:
       - API_URL=http://kitchen-api:8080
-      - PARTNER_API_KEY=partner_api_key_dolce_vita
+      - PARTNER_API_KEY=partner_api_key_dominos
     depends_on:
       kitchen-api:
         condition: service_started
