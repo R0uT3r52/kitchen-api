@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"kitchen-api/internal/domain"
 	"os"
@@ -74,12 +75,12 @@ func (r *Repo) GetActiveRestaurants(ctx context.Context) ([]domain.Restaurant, e
 		return nil, err
 	}
 
-	ans, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.Restaurant])
+	ans, err := pgx.CollectRows(rows, pgx.RowToStructByName[restaurantRow])
 	if err != nil {
 		return nil, err
 	}
 
-	return ans, nil
+	return toDomainRestaurants(ans), nil
 }
 
 func (r *Repo) GetRestaurantByID(ctx context.Context, id int64) (*domain.Restaurant, error) {
@@ -90,12 +91,16 @@ func (r *Repo) GetRestaurantByID(ctx context.Context, id int64) (*domain.Restaur
 		return nil, err
 	}
 
-	ans, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Restaurant])
+	ans, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[restaurantRow])
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrRestaurantNotFound
+		}
 		return nil, err
 	}
 
-	return &ans, nil
+	dom := ans.toDomain()
+	return &dom, nil
 }
 
 func (r *Repo) GetRestaurantByAPIKey(ctx context.Context, apiKey string) (*domain.Restaurant, error) {
@@ -107,12 +112,16 @@ func (r *Repo) GetRestaurantByAPIKey(ctx context.Context, apiKey string) (*domai
 		return nil, err
 	}
 
-	ans, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Restaurant])
+	ans, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[restaurantRow])
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrRestaurantNotFound
+		}
 		return nil, err
 	}
 
-	return &ans, nil
+	dom := ans.toDomain()
+	return &dom, nil
 }
 
 func (r *Repo) GetMenuByRestaurantID(ctx context.Context, restaurantID int64) ([]domain.MenuItem, error) {
@@ -123,15 +132,21 @@ func (r *Repo) GetMenuByRestaurantID(ctx context.Context, restaurantID int64) ([
 		return nil, err
 	}
 
-	ans, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.MenuItem])
+	ans, err := pgx.CollectRows(rows, pgx.RowToStructByName[menuItemRow])
 	if err != nil {
 		return nil, err
 	}
 
-	return ans, nil
+	return toDomainMenuItems(ans), nil
 }
 
 func (r *Repo) UpsertMenuItems(ctx context.Context, restaurantID int64, items []domain.MenuItem) error {
+	tx, err := r.Data.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
 	sql := `INSERT INTO menu_items (restaurant_id, external_id, name, price_cents, is_available)
 			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (restaurant_id, external_id) DO UPDATE
@@ -146,7 +161,7 @@ func (r *Repo) UpsertMenuItems(ctx context.Context, restaurantID int64, items []
 		}
 	}
 
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
@@ -212,8 +227,11 @@ func (r *Repo) GetOrderByID(ctx context.Context, orderID int64) (*domain.Order, 
 		return nil, err
 	}
 
-	order, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Order])
+	row, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[orderRow])
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrOrderNotFound
+		}
 		return nil, err
 	}
 
@@ -224,12 +242,13 @@ func (r *Repo) GetOrderByID(ctx context.Context, orderID int64) (*domain.Order, 
 		return nil, err
 	}
 
-	items, err := pgx.CollectRows(itemsRows, pgx.RowToStructByName[domain.OrderItem])
+	items, err := pgx.CollectRows(itemsRows, pgx.RowToStructByName[orderItemRow])
 	if err != nil {
 		return nil, err
 	}
 
-	order.Items = items
+	order := row.toDomain()
+	order.Items = toDomainOrderItems(items)
 
 	return &order, nil
 }
@@ -242,18 +261,18 @@ func (r *Repo) GetOrdersByUserID(ctx context.Context, userID string) ([]domain.O
 		return nil, err
 	}
 
-	ans, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.Order])
+	orderRows, err := pgx.CollectRows(rows, pgx.RowToStructByName[orderRow])
 	if err != nil {
 		return nil, err
 	}
 
-	if len(ans) == 0 {
-		return ans, nil
+	if len(orderRows) == 0 {
+		return []domain.Order{}, nil
 	}
 
-	orderIDs := make([]int64, 0, len(ans))
-	for i := range ans {
-		orderIDs = append(orderIDs, ans[i].ID)
+	orderIDs := make([]int64, 0, len(orderRows))
+	for i := range orderRows {
+		orderIDs = append(orderIDs, orderRows[i].ID)
 	}
 
 	sql2 := `SELECT * FROM order_items WHERE order_id = ANY($1);`
@@ -262,16 +281,17 @@ func (r *Repo) GetOrdersByUserID(ctx context.Context, userID string) ([]domain.O
 		return nil, err
 	}
 
-	orderItems, err := pgx.CollectRows(itemsRows, pgx.RowToStructByName[domain.OrderItem])
+	orderItems, err := pgx.CollectRows(itemsRows, pgx.RowToStructByName[orderItemRow])
 	if err != nil {
 		return nil, err
 	}
 
 	itemsMap := make(map[int64][]domain.OrderItem)
 	for _, item := range orderItems {
-		itemsMap[item.OrderID] = append(itemsMap[item.OrderID], item)
+		itemsMap[item.OrderID] = append(itemsMap[item.OrderID], item.toDomain())
 	}
 
+	ans := toDomainOrders(orderRows)
 	for i := range ans {
 		if items, ok := itemsMap[ans[i].ID]; ok {
 			ans[i].Items = items
@@ -281,26 +301,33 @@ func (r *Repo) GetOrdersByUserID(ctx context.Context, userID string) ([]domain.O
 	return ans, nil
 }
 
-func (r *Repo) GetOrdersByRestaurantAndStatus(ctx context.Context, restaurantID int64, status domain.OrderStatus) ([]domain.Order, error) {
-	sql := `SELECT * FROM orders WHERE restaurant_id=$1 AND status=$2 ORDER BY created_at DESC;`
+func (r *Repo) GetOrdersByRestaurantAndStatus(ctx context.Context, restaurantID int64, status *domain.OrderStatus) ([]domain.Order, error) {
+	var rows pgx.Rows
+	var err error
 
-	rows, err := r.Data.Query(ctx, sql, restaurantID, status)
+	if status != nil {
+		sql := `SELECT * FROM orders WHERE restaurant_id=$1 AND status=$2 ORDER BY created_at DESC;`
+		rows, err = r.Data.Query(ctx, sql, restaurantID, string(*status))
+	} else {
+		sql := `SELECT * FROM orders WHERE restaurant_id=$1 ORDER BY created_at DESC;`
+		rows, err = r.Data.Query(ctx, sql, restaurantID)
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	ans, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.Order])
+	orderRows, err := pgx.CollectRows(rows, pgx.RowToStructByName[orderRow])
 	if err != nil {
 		return nil, err
 	}
 
-	if len(ans) == 0 {
-		return ans, nil
+	if len(orderRows) == 0 {
+		return []domain.Order{}, nil
 	}
 
-	orderIDs := make([]int64, 0, len(ans))
-	for i := range ans {
-		orderIDs = append(orderIDs, ans[i].ID)
+	orderIDs := make([]int64, 0, len(orderRows))
+	for i := range orderRows {
+		orderIDs = append(orderIDs, orderRows[i].ID)
 	}
 
 	sql2 := `SELECT * FROM order_items WHERE order_id = ANY($1);`
@@ -309,16 +336,17 @@ func (r *Repo) GetOrdersByRestaurantAndStatus(ctx context.Context, restaurantID 
 		return nil, err
 	}
 
-	orderItems, err := pgx.CollectRows(itemsRows, pgx.RowToStructByName[domain.OrderItem])
+	orderItems, err := pgx.CollectRows(itemsRows, pgx.RowToStructByName[orderItemRow])
 	if err != nil {
 		return nil, err
 	}
 
 	itemsMap := make(map[int64][]domain.OrderItem)
 	for _, item := range orderItems {
-		itemsMap[item.OrderID] = append(itemsMap[item.OrderID], item)
+		itemsMap[item.OrderID] = append(itemsMap[item.OrderID], item.toDomain())
 	}
 
+	ans := toDomainOrders(orderRows)
 	for i := range ans {
 		if items, ok := itemsMap[ans[i].ID]; ok {
 			ans[i].Items = items
@@ -339,11 +367,21 @@ func (r *Repo) UpdateOrderStatus(ctx context.Context, orderID int64, newStatus d
 	sqlSelect := `SELECT status FROM orders WHERE id=$1 FOR UPDATE;`
 	err = tx.QueryRow(ctx, sqlSelect, orderID).Scan(&oldStatus)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrOrderNotFound
+		}
 		return err
 	}
 
 	if oldStatus == newStatus {
 		return tx.Commit(ctx)
+	}
+
+	if !domain.CanTransition(oldStatus, newStatus) {
+		if oldStatus == domain.StatusCancelled {
+			return domain.ErrOrderAlreadyCancelled
+		}
+		return domain.ErrInvalidStatusTransition
 	}
 
 	sqlUpdate := `UPDATE orders SET status=$1 WHERE id=$2;`

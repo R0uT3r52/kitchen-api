@@ -15,7 +15,7 @@ type OrderUseCase interface {
 
 type PartnerUseCase interface {
 	UpsertMenu(ctx context.Context, restaurantID int64, items []MenuItem) error
-	GetPendingOrders(ctx context.Context, restaurantID int64) ([]Order, error)
+	GetOrders(ctx context.Context, restaurantID int64, status *OrderStatus) ([]Order, error)
 	UpdateOrderStatus(ctx context.Context, restaurantID int64, orderID int64, newStatus OrderStatus) error
 }
 
@@ -30,6 +30,6 @@ type Repository interface {
 	CreateOrder(ctx context.Context, order *Order) error
 	GetOrderByID(ctx context.Context, orderID int64) (*Order, error)
 	GetOrdersByUserID(ctx context.Context, userID string) ([]Order, error)
-	GetOrdersByRestaurantAndStatus(ctx context.Context, restaurantID int64, status OrderStatus) ([]Order, error)
+	GetOrdersByRestaurantAndStatus(ctx context.Context, restaurantID int64, status *OrderStatus) ([]Order, error)
 	UpdateOrderStatus(ctx context.Context, orderID int64, newStatus OrderStatus) error
 }
