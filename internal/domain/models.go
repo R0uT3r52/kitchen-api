@@ -14,6 +14,21 @@ const (
 	StatusCancelled OrderStatus = "cancelled"
 )
 
+func (s OrderStatus) Validate() bool {
+	switch s {
+	case StatusCreated,
+		StatusAccepted,
+		StatusRejected,
+		StatusCooking,
+		StatusReady,
+		StatusCompleted,
+		StatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
 type Restaurant struct {
 	ID          int64     `json:"id"`
 	Name        string    `json:"name"`

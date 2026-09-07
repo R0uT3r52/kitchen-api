@@ -17,6 +17,7 @@ type PartnerUseCase interface {
 	UpsertMenu(ctx context.Context, restaurantID int64, items []MenuItem) error
 	GetOrders(ctx context.Context, restaurantID int64, status *OrderStatus) ([]Order, error)
 	UpdateOrderStatus(ctx context.Context, restaurantID int64, orderID int64, newStatus OrderStatus) error
+	GetRestaurantByAPIKey(ctx context.Context, apiKey string) (*Restaurant, error)
 }
 
 type Repository interface {
@@ -24,6 +25,7 @@ type Repository interface {
 	GetRestaurantByID(ctx context.Context, id int64) (*Restaurant, error)
 	GetRestaurantByAPIKey(ctx context.Context, apiKey string) (*Restaurant, error)
 
+	GetActiveMenuByRestaurantID(ctx context.Context, restaurantID int64) ([]MenuItem, error)
 	GetMenuByRestaurantID(ctx context.Context, restaurantID int64) ([]MenuItem, error)
 	UpsertMenuItems(ctx context.Context, restaurantID int64, items []MenuItem) error
 

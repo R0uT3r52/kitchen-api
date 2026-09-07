@@ -124,6 +124,22 @@ func (r *Repo) GetRestaurantByAPIKey(ctx context.Context, apiKey string) (*domai
 	return &dom, nil
 }
 
+func (r *Repo) GetActiveMenuByRestaurantID(ctx context.Context, restaurantID int64) ([]domain.MenuItem, error) {
+	sql := `SELECT * FROM menu_items WHERE restaurant_id=$1 AND is_available=TRUE;`
+
+	rows, err := r.Data.Query(ctx, sql, restaurantID)
+	if err != nil {
+		return nil, err
+	}
+
+	ans, err := pgx.CollectRows(rows, pgx.RowToStructByName[menuItemRow])
+	if err != nil {
+		return nil, err
+	}
+
+	return toDomainMenuItems(ans), nil
+}
+
 func (r *Repo) GetMenuByRestaurantID(ctx context.Context, restaurantID int64) ([]domain.MenuItem, error) {
 	sql := `SELECT * FROM menu_items WHERE restaurant_id=$1;`
 
@@ -155,7 +171,7 @@ func (r *Repo) UpsertMenuItems(ctx context.Context, restaurantID int64, items []
 	// Better to use batch, instead of sending separate DB requests
 	// Will be in assumption in README
 	for _, elem := range items {
-		_, err := r.Data.Exec(ctx, sql, restaurantID, elem.ExternalID, elem.Name, elem.PriceCents, elem.IsAvailable)
+		_, err := tx.Exec(ctx, sql, restaurantID, elem.ExternalID, elem.Name, elem.PriceCents, elem.IsAvailable)
 		if err != nil {
 			return err
 		}
