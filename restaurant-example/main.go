@@ -1,3 +1,4 @@
+// Package main provides a demonstration partner restaurant service for Avito Kitchen.
 package main
 
 import (
