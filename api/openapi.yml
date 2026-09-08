@@ -1,8 +1,545 @@
 openapi: 3.0.3
 info:
   title: Avito Kitchen API
-  version: 0.1.0
-  description: Каркас спецификации API сервиса Авито.Кухня
+  version: 1.0.0
+  description: MVP API сервиса Авито.Кухня для оформления заказов и интеграции партнеров-ресторанов.
+
+servers:
+  - url: http://localhost:8080
+    description: Локальный сервер разработки
 
 paths:
-  # TODO: swaggo generation (Code-First spec)
+  /health:
+    get:
+      summary: Проверка работоспособности сервиса
+      responses:
+        '200':
+          description: Сервис работает
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/v1/restaurants:
+    get:
+      summary: Получение списка активных ресторанов
+      tags:
+        - Client API
+      responses:
+        '200':
+          description: Список активных ресторанов
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Restaurant'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/restaurants/{id}/menu:
+    get:
+      summary: Получение доступного меню ресторана
+      tags:
+        - Client API
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Список доступных блюд
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MenuItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/orders:
+    get:
+      summary: Получение списка заказов пользователя
+      tags:
+        - Client API
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            example: user_123
+      responses:
+        '200':
+          description: Список заказов пользователя
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      summary: Создание нового заказа
+      tags:
+        - Client API
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '201':
+          description: Заказ успешно создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/orders/{id}:
+    get:
+      summary: Получение информации о заказе по ID
+      tags:
+        - Client API
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Информация о заказе
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/orders/{id}/cancel:
+    post:
+      summary: Отмена заказа пользователем (до начала готовки)
+      tags:
+        - Client API
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelOrderRequest'
+      responses:
+        '200':
+          description: Заказ успешно отменен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/menu:
+    put:
+      summary: Пакетная синхронизация меню заведения (создание, обновление, стоп-лист)
+      tags:
+        - Partner API
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertMenuRequest'
+      responses:
+        '200':
+          description: Меню успешно синхронизировано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/orders:
+    get:
+      summary: Получение заказов заведения с фильтрацией по статусу
+      tags:
+        - Partner API
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [created, accepted, rejected, cooking, ready, completed, cancelled]
+      responses:
+        '200':
+          description: Список заказов заведения
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/orders/{id}/status:
+    patch:
+      summary: Обновление статуса заказа заведением
+      tags:
+        - Partner API
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStatusRequest'
+      responses:
+        '200':
+          description: Статус заказа успешно обновлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-KEY
+      description: API-ключ партнера для аутентификации заведения
+
+  schemas:
+    Restaurant:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        name:
+          type: string
+          example: "Додо Пицца"
+        description:
+          type: string
+          example: "Сеть пиццерий №1"
+        is_active:
+          type: boolean
+          example: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    MenuItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 10
+        restaurant_id:
+          type: integer
+          format: int64
+          example: 1
+        external_id:
+          type: string
+          example: "pizza_pepp_30"
+        name:
+          type: string
+          example: "Пепперони 30 см"
+        price_cents:
+          type: integer
+          format: int64
+          description: Цена в копейках
+          example: 59000
+        is_available:
+          type: boolean
+          example: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    MenuItemDTO:
+      type: object
+      required:
+        - external_id
+        - name
+        - price_cents
+      properties:
+        external_id:
+          type: string
+          example: "pizza_pepp_30"
+        name:
+          type: string
+          example: "Пепперони 30 см"
+        price_cents:
+          type: integer
+          format: int64
+          example: 59000
+        is_available:
+          type: boolean
+          default: true
+          example: true
+
+    UpsertMenuRequest:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MenuItemDTO'
+
+    OrderItemRequest:
+      type: object
+      required:
+        - menu_item_id
+        - quantity
+      properties:
+        menu_item_id:
+          type: integer
+          format: int64
+          example: 10
+        quantity:
+          type: integer
+          minimum: 1
+          example: 2
+
+    CreateOrderRequest:
+      type: object
+      required:
+        - user_id
+        - restaurant_id
+        - items
+      properties:
+        user_id:
+          type: string
+          example: "user_123"
+        restaurant_id:
+          type: integer
+          format: int64
+          example: 1
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItemRequest'
+
+    CancelOrderRequest:
+      type: object
+      required:
+        - user_id
+      properties:
+        user_id:
+          type: string
+          example: "user_123"
+
+    UpdateStatusRequest:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum: [created, accepted, rejected, cooking, ready, completed, cancelled]
+          example: "accepted"
+
+    OrderItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 50
+        order_id:
+          type: integer
+          format: int64
+          example: 100
+        menu_item_id:
+          type: integer
+          format: int64
+          example: 10
+        quantity:
+          type: integer
+          example: 2
+        unit_price_cents:
+          type: integer
+          format: int64
+          example: 59000
+        created_at:
+          type: string
+          format: date-time
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 100
+        user_id:
+          type: string
+          example: "user_123"
+        restaurant_id:
+          type: integer
+          format: int64
+          example: 1
+        status:
+          type: string
+          enum: [created, accepted, rejected, cooking, ready, completed, cancelled]
+          example: "created"
+        total_price_cents:
+          type: integer
+          format: int64
+          example: 118000
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItem'
+
+    StatusResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "ok"
+        message:
+          type: string
+          example: "status updated"
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "item not available in menu"
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос / ошибки валидации
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Отсутствует или невалиден заголовок X-API-KEY
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Доступ запрещен (заведение деактивировано или заказ принадлежит другому заведению)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Конфликт состояния (недопустимый переход статуса / заказ уже отменен)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
