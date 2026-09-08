@@ -14,5 +14,6 @@ WHERE external_id IN (
 DELETE FROM restaurants
 WHERE api_key IN (
     'partner_api_key_dominos',
-    'partner_api_key_rostics'
+    'partner_api_key_rostics',
+    'partner_api_key_closed'
 );

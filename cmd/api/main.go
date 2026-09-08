@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"kitchen-api/internal/domain"
 	"kitchen-api/internal/repository"
 	"kitchen-api/internal/web"
 	"log"
@@ -26,10 +27,10 @@ func main() {
 	defer dbPool.Close()
 
 	repo := repository.NewRepo(dbPool)
-	_ = repo // TODO: pass to use-cases
+	orderService := domain.NewOrderService(repo)
+	partnerService := domain.NewPartnerService(repo)
 
-	// TODO: implement domain use-case using repo
-	handler := web.NewHandler(nil, nil) // pass usecases
+	handler := web.NewHandler(orderService, partnerService)
 
 	server := &http.Server{
 		Addr:         ":" + port,

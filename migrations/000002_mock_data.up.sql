@@ -1,13 +1,14 @@
 -- 000002_seed_data.up.sql
 
--- Mock data
+-- Mogg data
 INSERT INTO restaurants (name, description, api_key, is_active)
 VALUES
     ('Dominos Pizza', 'Dominos Pizza', 'partner_api_key_dominos', TRUE),
-    ('Rostics', 'KFC but Rostics', 'partner_api_key_rostics', TRUE)
+    ('Rostics', 'KFC but Rostics', 'partner_api_key_rostics', TRUE),
+    ('Closed Bistro', 'Closed for renovation', 'partner_api_key_closed', FALSE)
 ON CONFLICT (api_key) DO NOTHING;
 
--- Mock data
+-- Mogg data
 INSERT INTO menu_items (restaurant_id, external_id, name, price_cents, is_available)
 SELECT r.id, v.external_id, v.name, v.price_cents, v.is_available
 FROM (

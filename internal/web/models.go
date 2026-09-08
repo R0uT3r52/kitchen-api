@@ -31,3 +31,12 @@ type UpsertMenuRequest struct {
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
+
+type CancelOrderRequest struct {
+	UserID string `json:"user_id"`
+}
+
+type StatusResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
