@@ -214,7 +214,7 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 	}
 
 	for i := range dt {
-		if dt[i].IsAvailable == false {
+		if !dt[i].IsAvailable {
 			return domain.ErrMenuItemUnavailable
 		}
 		if dt[i].PriceCents != order.Items[i].UnitPriceCents {
