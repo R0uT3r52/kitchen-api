@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"kitchen-api/internal/domain"
+	"kitchen-api/internal/repository"
 )
 
 // Create orders and check transaction
@@ -220,6 +221,67 @@ func TestOrder_TimestampTrigger(t *testing.T) {
 
 	if !newUpdatedAt.After(initialUpdatedAt) {
 		t.Errorf("expected updated_at (%v) to be after initial (%v)", newUpdatedAt, initialUpdatedAt)
+	}
+}
+
+// intercept CreateOrder func to simulate restaurant update item status, while user creating order
+type interceptedRepo struct {
+	*repository.Repo
+	beforeCreateOrder func()
+}
+
+func (r *interceptedRepo) CreateOrder(ctx context.Context, order *domain.Order) error {
+	if r.beforeCreateOrder != nil {
+		r.beforeCreateOrder()
+	}
+	return r.Repo.CreateOrder(ctx, order)
+}
+
+func TestCreateOrder_ItemRace(t *testing.T) {
+	cleanDB(t)
+	ctx := context.Background()
+
+	restID := createTestRestaurant(t, "Diner", "key_diner", true)
+	itemID := createTestMenuItem(t, restID, "limited_steak", "limited steak", 80000, true)
+
+	intercepted := &interceptedRepo{
+		Repo: testRepo,
+	}
+
+	// after domain.OrderService, but before inserting onto DB
+	intercepted.beforeCreateOrder = func() {
+		err := testRepo.UpsertMenuItems(ctx, restID, []domain.MenuItem{
+			{
+				ExternalID:  "limited_steak",
+				Name:        "limited steak",
+				PriceCents:  80000,
+				IsAvailable: false,
+			},
+		})
+		if err != nil {
+			t.Fatalf("failed to update menu availability: %v", err)
+		}
+	}
+
+	orderService := domain.NewOrderService(intercepted)
+
+	order, err := orderService.CreateOrder(ctx, "user_toctou", restID, []domain.OrderItemCreate{
+		{MenuItemID: itemID, Quantity: 1},
+	})
+
+	// if race is prevented -> no orders created in DB
+	if err == nil {
+		t.Fatalf("Error: order %d was successfully placed, but is not available", order.ID)
+	}
+	if !errors.Is(err, domain.ErrMenuItemUnavailable) {
+		t.Fatalf("expected ErrMenuItemUnavailable, got %v", err)
+	}
+
+	// 0 orders should be created in DB
+	var ordersCount int
+	_ = testPool.QueryRow(ctx, "SELECT count(*) FROM orders WHERE restaurant_id = $1", restID).Scan(&ordersCount)
+	if ordersCount != 0 {
+		t.Fatalf("expected 0 orders in DB, found %d", ordersCount)
 	}
 }
 

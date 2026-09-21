@@ -163,18 +163,19 @@ func (r *Repo) UpsertMenuItems(ctx context.Context, restaurantID int64, items []
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	batch := &pgx.Batch{}
+
 	sql := `INSERT INTO menu_items (restaurant_id, external_id, name, price_cents, is_available)
 			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (restaurant_id, external_id) DO UPDATE
 			SET name=$3, price_cents=$4, is_available=$5;`
 
-	// Better to use batch, instead of sending separate DB requests
-	// Will be in assumption in README
 	for _, elem := range items {
-		_, err := tx.Exec(ctx, sql, restaurantID, elem.ExternalID, elem.Name, elem.PriceCents, elem.IsAvailable)
-		if err != nil {
-			return err
-		}
+		batch.Queue(sql, restaurantID, elem.ExternalID, elem.Name, elem.PriceCents, elem.IsAvailable)
+	}
+
+	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+		return err
 	}
 
 	return tx.Commit(ctx)
