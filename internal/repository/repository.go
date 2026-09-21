@@ -189,6 +189,38 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 
 	// Will rollback on error
 	defer tx.Rollback(ctx) //nolint:errcheck
+	menuIDS := make([]int, 0)
+
+	for i := range order.Items {
+		menuIDS = append(menuIDS, int(order.Items[i].MenuItemID))
+	}
+
+	sqlCheck := `SELECT * FROM menu_items
+	WHERE id=ANY($1) AND restaurant_id=$2
+	FOR SHARE;`
+
+	checkRows, err := tx.Query(ctx, sqlCheck, menuIDS, order.RestaurantID)
+	if err != nil {
+		return err
+	}
+
+	dt, err := pgx.CollectRows(checkRows, pgx.RowToStructByName[menuItemRow])
+	if err != nil {
+		return err
+	}
+
+	if len(dt) < len(menuIDS) {
+		return domain.ErrInvalidData
+	}
+
+	for i := range dt {
+		if dt[i].IsAvailable == false {
+			return domain.ErrMenuItemUnavailable
+		}
+		if dt[i].PriceCents != order.Items[i].UnitPriceCents {
+			return domain.ErrInvalidData
+		}
+	}
 
 	sqlOrder := `
 		INSERT INTO orders (user_id, restaurant_id, status, total_price_cents)
