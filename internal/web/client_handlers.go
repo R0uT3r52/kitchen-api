@@ -48,6 +48,14 @@ func (h *Handler) handleGetRestaurantMenu(w http.ResponseWriter, r *http.Request
 
 // POST /api/v1/orders
 func (h *Handler) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
+
+	// Send the message to Kafka topic (orders)
+	// Then the restaurant example gets this message
+	// and runs worker(s) to change statuses
+	// then the restaurant example sends status messages to kafka topic (status_updates)
+	// kitchen-api reads from this topic and changes the DB statuses
+	// if any error on status validation - send to dlq (status_updates.dlq)
+
 	var req CreateOrderRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

@@ -56,7 +56,7 @@ type OrderDTO struct {
 }
 
 var initialMenu = []MenuItemDTO{
-	{ExternalID: "pizza_margherita", Name: "Пицца Маргарита", PriceCents: 450000, IsAvailable: true},
+	{ExternalID: "pizza_margharita", Name: "Пицца Маргарита", PriceCents: 450000, IsAvailable: true},
 	{ExternalID: "pizza_pepperoni", Name: "Пицца Пепперони", PriceCents: 550000, IsAvailable: true},
 	{ExternalID: "pizza_4cheeses", Name: "Пицца 4 сыра", PriceCents: 620000, IsAvailable: true},
 	{ExternalID: "tiramisu", Name: "Десерт Тирамису", PriceCents: 280000, IsAvailable: true},

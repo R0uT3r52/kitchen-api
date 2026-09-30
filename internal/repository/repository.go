@@ -2,13 +2,17 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"kitchen-api/internal/domain"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/segmentio/kafka-go"
 )
 
 func GetDB(ctx context.Context) (*pgxpool.Pool, error) {
@@ -61,9 +65,45 @@ func GetDB(ctx context.Context) (*pgxpool.Pool, error) {
 	return db, nil
 }
 
-func NewRepo(db *pgxpool.Pool) *Repo {
+func GetKafkaReader() (*kafka.Reader, error) {
+	topicName := os.Getenv("TOPIC_STATUS") // topic for reading statuses of orders
+	brokerAddr := os.Getenv("KAFKA_ADDR")
+
+	if len(topicName) == 0 || len(brokerAddr) == 0 {
+		return nil, fmt.Errorf("Failed to get TOPIC_STATUS [%s with len=%d] or KAFKA_ADDR [%s with len=%d]",
+			topicName, len(topicName), brokerAddr, len(brokerAddr))
+	}
+
+	r := kafka.NewReader(kafka.ReaderConfig{
+		Brokers: []string{brokerAddr},
+		Topic:   topicName,
+		GroupID: "order_status_reader",
+	})
+	return r, nil
+}
+
+func GetKafkaWrite() (*kafka.Writer, error) {
+	topicName := os.Getenv("TOPIC_ORDERS") // topic for writing new orders
+	brokerAddr := os.Getenv("KAFKA_ADDR")
+
+	if len(topicName) == 0 || len(brokerAddr) == 0 {
+		return nil, fmt.Errorf("Failed to get TOPIC_ORDERS [%s with len=%d] or KAFKA_ADDR [%s with len=%d]",
+			topicName, len(topicName), brokerAddr, len(brokerAddr))
+	}
+
+	w := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  []string{brokerAddr},
+		Topic:    topicName,
+		Balancer: &kafka.Hash{},
+	})
+	return w, nil
+}
+
+func NewRepo(db *pgxpool.Pool, kfkReader *kafka.Reader, kfkWriter *kafka.Writer) *Repo {
 	return &Repo{
-		Data: db,
+		Data:      db,
+		KfkReader: kfkReader,
+		KfkWriter: kfkWriter,
 	}
 }
 
@@ -187,12 +227,32 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 		return err
 	}
 
+	// {
+	//  "event_id": "uuid",
+	//  "order_id": 1042,
+	//  "restaurant_id": 1,
+	//  "items": [{"menu_item_id": 1, "quantity": 2, "price_cents": 550000}],
+	//  "total_price_cents": 1100000,
+	//  "created_at": "2026-09-26T12:00:00Z"
+	// }
+
+	type topicMessage struct {
+		EventID    string             `json:"event_id"`
+		OrderID    int64              `json:"order_id"`
+		RestID     int64              `json:"restaurant_id"`
+		Items      []domain.OrderItem `json:"order_items"`
+		TotalPrice int64              `json:"total_price_cents"`
+		CreatedAt  time.Time          `json:"created_at"`
+	}
+
+	tm := topicMessage{}
+
 	// Will rollback on error
 	defer tx.Rollback(ctx) //nolint:errcheck
-	menuIDS := make([]int, 0)
+	menuIDS := make([]int64, 0)
 
 	for i := range order.Items {
-		menuIDS = append(menuIDS, int(order.Items[i].MenuItemID))
+		menuIDS = append(menuIDS, order.Items[i].MenuItemID)
 	}
 
 	sqlCheck := `SELECT * FROM menu_items
@@ -237,6 +297,12 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 		return err
 	}
 
+	tm.TotalPrice = order.TotalPriceCents
+	tm.RestID = order.RestaurantID
+	tm.OrderID = order.ID
+	tm.CreatedAt = order.CreatedAt
+	tm.Items = make([]domain.OrderItem, 0, len(order.Items))
+
 	sqlItem := `
 		INSERT INTO order_items (order_id, menu_item_id, quantity, unit_price_cents)
 		VALUES ($1, $2, $3, $4)
@@ -253,6 +319,20 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 		if err != nil {
 			return err
 		}
+
+		tm.Items = append(tm.Items, domain.OrderItem{
+			ID:             order.Items[i].ID,
+			OrderID:        order.ID,
+			MenuItemID:     order.Items[i].MenuItemID,
+			Quantity:       order.Items[i].Quantity,
+			UnitPriceCents: order.Items[i].UnitPriceCents,
+			CreatedAt:      order.Items[i].CreatedAt,
+		})
+	}
+
+	data, err := json.Marshal(tm)
+	if err != nil {
+		return err
 	}
 
 	sqlEvent := `
@@ -260,6 +340,15 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 		VALUES ($1, NULL, $2);
 	`
 	_, err = tx.Exec(ctx, sqlEvent, order.ID, order.Status)
+	if err != nil {
+		return err
+	}
+
+	sqlOutboxEvent := `
+		INSERT INTO outbox_events (topic, payload, event_key)
+		VALUES ($1, $2, $3);
+	`
+	_, err = tx.Exec(ctx, sqlOutboxEvent, r.KfkWriter.Topic, data, strconv.Itoa(int(tm.OrderID)))
 	if err != nil {
 		return err
 	}

@@ -6,10 +6,13 @@ import (
 	"kitchen-api/internal/domain"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/segmentio/kafka-go"
 )
 
 type Repo struct {
-	Data *pgxpool.Pool
+	Data      *pgxpool.Pool
+	KfkReader *kafka.Reader
+	KfkWriter *kafka.Writer
 }
 
 type OrderEvent struct {

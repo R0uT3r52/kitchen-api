@@ -87,5 +87,15 @@ CREATE TABLE IF NOT EXISTS order_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE outbox_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    topic TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    event_key TEXT NOT NULL,
+    headers JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    processed_at TIMESTAMPTZ
+);
+
 -- Get order statuses history (for debug)
 CREATE INDEX idx_order_events_order_id ON order_events (order_id, created_at ASC);

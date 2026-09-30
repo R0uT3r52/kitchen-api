@@ -13,7 +13,7 @@ INSERT INTO menu_items (restaurant_id, external_id, name, price_cents, is_availa
 SELECT r.id, v.external_id, v.name, v.price_cents, v.is_available
 FROM (
     VALUES
-        ('partner_api_key_dominos', 'pizza_margherita', 'Пицца Маргарита', 450000, TRUE),
+        ('partner_api_key_dominos', 'pizza_margharita', 'Пицца Маргарита', 450000, TRUE),
         ('partner_api_key_dominos', 'pizza_pepperoni', 'Пицца Пепперони', 550000, TRUE),
         ('partner_api_key_dominos', 'pizza_4cheeses', 'Пицца 4 сыра', 620000, TRUE),
         ('partner_api_key_dominos', 'tiramisu', 'Десерт Тирамису', 280000, TRUE),

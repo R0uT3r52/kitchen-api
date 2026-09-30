@@ -26,7 +26,19 @@ func main() {
 	}
 	defer dbPool.Close()
 
-	repo := repository.NewRepo(dbPool)
+	kfkReader, err := repository.GetKafkaReader()
+	if err != nil {
+		log.Fatalf("failed to init kafka reader: %v", err)
+	}
+	defer kfkReader.Close()
+
+	kfkWriter, err := repository.GetKafkaWrite()
+	if err != nil {
+		log.Fatalf("failed to init kafka writer: %v", err)
+	}
+	defer kfkWriter.Close()
+
+	repo := repository.NewRepo(dbPool, kfkReader, kfkWriter)
 	orderService := domain.NewOrderService(repo)
 	partnerService := domain.NewPartnerService(repo)
 

@@ -14,6 +14,37 @@ services:
     networks:
       - kitchen-network
 
+  kafkasvc:
+    image: apache/kafka:4.2.2
+
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9092 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafkasvc:9093
+
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafkasvc:9092
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+
+      KAFKA_LOG4J_ROOT_LOGLEVEL: "WARN"
+      KAFKA_LOG4J_LOGGERS: "kafka=WARN,kafka.controller=WARN,kafka.server=WARN,org.apache.kafka=WARN"
+
+    networks:
+      - kitchen-network
+
   migrate:
     image: migrate/migrate
     env_file: .env
@@ -25,6 +56,25 @@ services:
     volumes:
       - ./migrations/:/migrations
     command: ["-path", "/migrations/", "-database", "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}?sslmode=disable", "up"]
+
+  kafka-init:
+      image: apache/kafka:4.2.2
+      depends_on:
+        kafkasvc:
+          condition: service_healthy
+
+      environment:
+        - TOPIC_ORDERS=orders.created
+        - TOPIC_STATUS=orders.status_updates
+
+      entrypoint: [ "/bin/sh", "-c" ]
+      command:
+        - |
+          for topic in $$TOPIC_ORDERS $$TOPIC_STATUS; do
+            /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafkasvc:9092 --create --if-not-exists --topic "$$topic" --partitions 3 --replication-factor 1
+          done
+      networks:
+        - kitchen-network
 
   kitchen-api:
     build:
@@ -40,9 +90,16 @@ services:
       - DB_PASSWORD=${POSTGRES_PASSWORD}
       - DB_NAME=${POSTGRES_DB}
       - PORT=8080
+      - TOPIC_ORDERS=orders.created
+      - TOPIC_STATUS=orders.status_updates
+      - KAFKA_ADDR=kafkasvc:9092
+
     depends_on:
       migrate:
         condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+
     networks:
       - kitchen-network
 
@@ -55,6 +112,9 @@ services:
       - PARTNER_API_KEY=partner_api_key_dominos
       - POLL_INTERVAL=5s
       - STEP_DELAY=2s
+      - TOPIC_ORDERS=orders.created
+      - TOPIC_STATUS=orders.status_updates
+      - KAFKA_ADDR=kafkasvc:9092
     depends_on:
       kitchen-api:
         condition: service_started
