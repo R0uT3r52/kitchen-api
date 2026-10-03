@@ -206,7 +206,7 @@ func processOrder(ctx context.Context, client *http.Client, apiURL, apiKey strin
 	defer activeOrders.Delete(order.ID)
 
 	orderID := order.ID
-	log.Printf("[Order #%d] Received new order with %d item(s), total %d kopecks",
+	log.Printf("[Order #%d] Received new order with %d item(s), total %d cents",
 		orderID, len(order.Items), order.TotalPriceCents)
 
 	if err := updateOrderStatus(ctx, client, apiURL, apiKey, orderID, "accepted"); err != nil {

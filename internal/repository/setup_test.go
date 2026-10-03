@@ -59,15 +59,17 @@ func TestMain(m *testing.M) {
 	}
 	defer testPool.Close()
 
-	schemaPath := filepath.Join("..", "..", "migrations", "000001_init_schema.up.sql")
-	schemaSQL, err := os.ReadFile(schemaPath)
-	if err != nil {
-		fmt.Printf("failed to read schema migration: %s\n", err)
-		os.Exit(1)
-	}
-	if _, err := testPool.Exec(ctx, string(schemaSQL)); err != nil {
-		fmt.Printf("failed to apply schema: %s\n", err)
-		os.Exit(1)
+	for _, file := range []string{"000001_init_schema.up.sql", "000003_add_outbox_events.up.sql"} {
+		schemaPath := filepath.Join("..", "..", "migrations", file)
+		schemaSQL, err := os.ReadFile(schemaPath)
+		if err != nil {
+			fmt.Printf("failed to read schema migration %s: %s\n", file, err)
+			os.Exit(1)
+		}
+		if _, err := testPool.Exec(ctx, string(schemaSQL)); err != nil {
+			fmt.Printf("failed to apply schema %s: %s\n", file, err)
+			os.Exit(1)
+		}
 	}
 
 	testRepo = repository.NewRepo(testPool)
@@ -80,7 +82,7 @@ func cleanDB(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	_, err := testPool.Exec(ctx, `
-		TRUNCATE TABLE order_events, order_items, orders, menu_items, restaurants RESTART IDENTITY CASCADE;
+		TRUNCATE TABLE order_events, order_items, orders, menu_items, restaurants, outbox_events RESTART IDENTITY CASCADE;
 	`)
 	if err != nil {
 		t.Fatalf("failed to truncate tables: %v", err)

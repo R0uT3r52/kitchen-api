@@ -5,14 +5,12 @@ import (
 
 	"kitchen-api/internal/domain"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/segmentio/kafka-go"
 )
 
 type Repo struct {
-	Data      *pgxpool.Pool
-	KfkReader *kafka.Reader
-	KfkWriter *kafka.Writer
+	Data *pgxpool.Pool
 }
 
 type OrderEvent struct {
@@ -61,4 +59,23 @@ type orderItemRow struct {
 	Quantity       int       `db:"quantity"`
 	UnitPriceCents int64     `db:"unit_price_cents"`
 	CreatedAt      time.Time `db:"created_at"`
+}
+
+type OutboxItemRow struct {
+	ID          uuid.UUID  `db:"id"`
+	Topic       string     `db:"topic"`
+	Payload     []byte     `db:"payload"`
+	EventKey    string     `db:"event_key"`
+	Headers     []byte     `db:"headers"`
+	CreatedAt   time.Time  `db:"created_at"`
+	ProcessedAt *time.Time `db:"processed_at"`
+}
+
+type topicMessage struct {
+	EventID    string             `json:"event_id"`
+	OrderID    int64              `json:"order_id"`
+	RestID     int64              `json:"restaurant_id"`
+	Items      []domain.OrderItem `json:"items"`
+	TotalPrice int64              `json:"total_price_cents"`
+	CreatedAt  time.Time          `json:"created_at"`
 }

@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"kitchen-api/internal/domain"
+	"log"
 	"os"
 	"strconv"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/segmentio/kafka-go"
 )
 
 func GetDB(ctx context.Context) (*pgxpool.Pool, error) {
@@ -65,45 +66,9 @@ func GetDB(ctx context.Context) (*pgxpool.Pool, error) {
 	return db, nil
 }
 
-func GetKafkaReader() (*kafka.Reader, error) {
-	topicName := os.Getenv("TOPIC_STATUS") // topic for reading statuses of orders
-	brokerAddr := os.Getenv("KAFKA_ADDR")
-
-	if len(topicName) == 0 || len(brokerAddr) == 0 {
-		return nil, fmt.Errorf("Failed to get TOPIC_STATUS [%s with len=%d] or KAFKA_ADDR [%s with len=%d]",
-			topicName, len(topicName), brokerAddr, len(brokerAddr))
-	}
-
-	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: []string{brokerAddr},
-		Topic:   topicName,
-		GroupID: "order_status_reader",
-	})
-	return r, nil
-}
-
-func GetKafkaWrite() (*kafka.Writer, error) {
-	topicName := os.Getenv("TOPIC_ORDERS") // topic for writing new orders
-	brokerAddr := os.Getenv("KAFKA_ADDR")
-
-	if len(topicName) == 0 || len(brokerAddr) == 0 {
-		return nil, fmt.Errorf("Failed to get TOPIC_ORDERS [%s with len=%d] or KAFKA_ADDR [%s with len=%d]",
-			topicName, len(topicName), brokerAddr, len(brokerAddr))
-	}
-
-	w := kafka.NewWriter(kafka.WriterConfig{
-		Brokers:  []string{brokerAddr},
-		Topic:    topicName,
-		Balancer: &kafka.Hash{},
-	})
-	return w, nil
-}
-
-func NewRepo(db *pgxpool.Pool, kfkReader *kafka.Reader, kfkWriter *kafka.Writer) *Repo {
+func NewRepo(db *pgxpool.Pool) *Repo {
 	return &Repo{
-		Data:      db,
-		KfkReader: kfkReader,
-		KfkWriter: kfkWriter,
+		Data: db,
 	}
 }
 
@@ -226,29 +191,9 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 	if err != nil {
 		return err
 	}
-
-	// {
-	//  "event_id": "uuid",
-	//  "order_id": 1042,
-	//  "restaurant_id": 1,
-	//  "items": [{"menu_item_id": 1, "quantity": 2, "price_cents": 550000}],
-	//  "total_price_cents": 1100000,
-	//  "created_at": "2026-09-26T12:00:00Z"
-	// }
-
-	type topicMessage struct {
-		EventID    string             `json:"event_id"`
-		OrderID    int64              `json:"order_id"`
-		RestID     int64              `json:"restaurant_id"`
-		Items      []domain.OrderItem `json:"order_items"`
-		TotalPrice int64              `json:"total_price_cents"`
-		CreatedAt  time.Time          `json:"created_at"`
-	}
-
-	tm := topicMessage{}
-
 	// Will rollback on error
 	defer tx.Rollback(ctx) //nolint:errcheck
+
 	menuIDS := make([]int64, 0)
 
 	for i := range order.Items {
@@ -297,6 +242,10 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 		return err
 	}
 
+	tm := topicMessage{}
+	eventUUID := uuid.New().String()
+
+	tm.EventID = eventUUID
 	tm.TotalPrice = order.TotalPriceCents
 	tm.RestID = order.RestaurantID
 	tm.OrderID = order.ID
@@ -344,11 +293,16 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 		return err
 	}
 
+	topic := os.Getenv("TOPIC_ORDERS")
+	if topic == "" {
+		topic = "orders.created"
+	}
+
 	sqlOutboxEvent := `
-		INSERT INTO outbox_events (topic, payload, event_key)
-		VALUES ($1, $2, $3);
+		INSERT INTO outbox_events (id, topic, payload, event_key)
+		VALUES ($1, $2, $3, $4);
 	`
-	_, err = tx.Exec(ctx, sqlOutboxEvent, r.KfkWriter.Topic, data, strconv.Itoa(int(tm.OrderID)))
+	_, err = tx.Exec(ctx, sqlOutboxEvent, eventUUID, topic, data, strconv.Itoa(int(tm.OrderID)))
 	if err != nil {
 		return err
 	}
@@ -538,4 +492,37 @@ func (r *Repo) UpdateOrderStatus(ctx context.Context, orderID int64, newStatus d
 	}
 
 	return tx.Commit(ctx)
+}
+
+func (r *Repo) GetOutboxEvents(ctx context.Context, limit int) ([]OutboxItemRow, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	sql := `
+	SELECT id, topic, payload, event_key, headers, created_at, processed_at
+	FROM outbox_events
+	WHERE processed = false
+	ORDER BY created_at ASC
+	LIMIT $1;`
+
+	rows, err := r.Data.Query(ctx, sql, limit)
+	if err != nil {
+		log.Printf("EROR HERE AFTER QUERY")
+		return nil, err
+	}
+
+	data, err := pgx.CollectRows(rows, pgx.RowToStructByName[OutboxItemRow])
+	if err != nil {
+		log.Printf("ERROR HERE AFTER COLLECTING ROWS")
+		return nil, err
+	}
+
+	return data, nil
+}
+
+func (r *Repo) MarkOutboxEventProcessed(ctx context.Context, id uuid.UUID) error {
+	sqlUpdate := `UPDATE outbox_events SET processed=true, processed_at=$1 WHERE id=$2;`
+	_, err := r.Data.Exec(ctx, sqlUpdate, time.Now(), id)
+	return err
 }
