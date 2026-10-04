@@ -1,6 +1,7 @@
 package kafka
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/segmentio/kafka-go"
@@ -30,8 +31,8 @@ func NewConsumer(brokerAddr, topic, groupID string) (*Consumer, error) {
 	return &Consumer{reader: r}, nil
 }
 
-func (c *Consumer) GetReader() *kafka.Reader {
-	return c.reader
+func (c *Consumer) ReadMessage(ctx context.Context) (kafka.Message, error) {
+	return c.reader.ReadMessage(ctx)
 }
 
 func (c *Consumer) Close() error {

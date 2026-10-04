@@ -65,9 +65,11 @@ func GetDB(ctx context.Context) (*pgxpool.Pool, error) {
 	return db, nil
 }
 
-func NewRepo(db *pgxpool.Pool) *Repo {
+func NewRepo(db *pgxpool.Pool, readerTopic string, writerTopic string) *Repo {
 	return &Repo{
-		Data: db,
+		Data:        db,
+		readerTopic: readerTopic,
+		writerTopic: writerTopic,
 	}
 }
 
@@ -250,7 +252,7 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 	orderEvent := OrderCreatedEvent{
 		EventID:         eventUUID,
 		OrderID:         order.ID,
-		RestID:          order.RestaurantID,
+		RestaurantID:    order.RestaurantID,
 		TotalPriceCents: order.TotalPriceCents,
 		CreatedAt:       order.CreatedAt,
 		Items:           make([]domain.OrderItem, 0, len(order.Items)),
@@ -297,16 +299,11 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 		return err
 	}
 
-	topic := os.Getenv("TOPIC_ORDERS")
-	if topic == "" {
-		topic = "orders.created"
-	}
-
 	sqlOutboxEvent := `
 		INSERT INTO outbox_events (id, topic, payload, event_key)
 		VALUES ($1, $2, $3, $4);
 	`
-	_, err = tx.Exec(ctx, sqlOutboxEvent, eventUUID, topic, data, strconv.Itoa(int(order.ID)))
+	_, err = tx.Exec(ctx, sqlOutboxEvent, eventUUID, r.writerTopic, data, strconv.Itoa(int(order.ID)))
 	if err != nil {
 		return err
 	}

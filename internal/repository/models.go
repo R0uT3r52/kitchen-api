@@ -10,7 +10,9 @@ import (
 )
 
 type Repo struct {
-	Data *pgxpool.Pool
+	Data        *pgxpool.Pool
+	writerTopic string
+	readerTopic string
 }
 
 type OrderEvent struct {
@@ -74,7 +76,7 @@ type OutboxItemRow struct {
 type OrderCreatedEvent struct {
 	EventID         string             `json:"event_id"`
 	OrderID         int64              `json:"order_id"`
-	RestID          int64              `json:"restaurant_id"`
+	RestaurantID    int64              `json:"restaurant_id"`
 	Items           []domain.OrderItem `json:"items"`
 	TotalPriceCents int64              `json:"total_price_cents"`
 	CreatedAt       time.Time          `json:"created_at"`

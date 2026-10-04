@@ -72,7 +72,7 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	testRepo = repository.NewRepo(testPool)
+	testRepo = repository.NewRepo(testPool, "", "")
 
 	code := m.Run()
 	os.Exit(code)

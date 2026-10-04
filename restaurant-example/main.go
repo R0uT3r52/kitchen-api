@@ -219,12 +219,11 @@ func sleepContext(ctx context.Context, d time.Duration) bool {
 
 func pollKafkaOrders(ctx context.Context, wg *sync.WaitGroup, stepDelay time.Duration, consumer *kafka.Consumer, producer *kafka.Producer, activeOrders *sync.Map) {
 	defer wg.Done()
-	reader := consumer.GetReader()
 
 	log.Println("[polling] Started polling Kafka for new orders...")
 
 	for {
-		msg, err := reader.ReadMessage(ctx)
+		msg, err := consumer.ReadMessage(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				log.Println("[polling] Context canceled, stopping Kafka order consumer")
@@ -246,7 +245,8 @@ func pollKafkaOrders(ctx context.Context, wg *sync.WaitGroup, stepDelay time.Dur
 		}
 
 		wg.Add(1)
-		go processOrder(ctx, producer, order, stepDelay, activeOrders, wg)
+		// context.Background() to prevent cooking process stop
+		go processOrder(context.Background(), producer, order, stepDelay, activeOrders, wg)
 	}
 }
 
@@ -294,11 +294,28 @@ func main() {
 	var activeOrders sync.Map
 	var wg sync.WaitGroup
 
+	pollCtx, cancelPoll := context.WithCancel(context.Background())
+
 	wg.Add(1)
-	go pollKafkaOrders(ctx, &wg, stepDelay, consumer, producer, &activeOrders)
+	go pollKafkaOrders(pollCtx, &wg, stepDelay, consumer, producer, &activeOrders)
 
 	<-ctx.Done()
-	log.Println("Termination signal received, waiting for ongoing orders to finish...")
-	wg.Wait()
-	log.Println("restaurant-example stopped cleanly")
+	cancelPoll()
+
+	cookCtx, cancelCooking := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelCooking()
+
+	done := make(chan struct{})
+
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Println("restaurant-example stopped cleanly")
+	case <-cookCtx.Done():
+		log.Println("Cooking timeout exited, terminating...")
+	}
 }

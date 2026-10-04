@@ -166,7 +166,7 @@ func main() {
 	}
 	defer kafkaConsumer.Close() //nolint:errcheck
 
-	repo := repository.NewRepo(dbPool)
+	repo := repository.NewRepo(dbPool, topicStatus, topicOrders)
 	orderService := domain.NewOrderService(repo)
 	partnerService := domain.NewPartnerService(repo)
 
