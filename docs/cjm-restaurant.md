@@ -1,38 +1,39 @@
 # CJM заведения
 
-## Путь заведения
+## Путь заведения (EDA)
 
 ```mermaid
 sequenceDiagram
     actor R as Заведение
     participant RS as Restaurant Service
-    participant A as Авито.Кухня API
+    participant K as Apache Kafka
+    participant A as Kitchen API
 
-    R->>RS: запускает сервис (api_key в конфиге)
-    RS->>A: PUT /api/v1/partner/menu
-    A-->>RS: меню сохранено (update и insert по external_id)
+    R->>RS: запуск сервиса (конфиг, api_key)
+    RS->>A: PUT /api/v1/partner/menu (REST)
+    A-->>RS: 200 OK (меню синхронизировано)
 
-    loop каждые 5 секунд
-        RS->>A: GET /api/v1/partner/orders?status=created
-        A-->>RS: новые заказы
-    end
+    Note over K,RS: Подписка на топик orders.created
 
-    alt Появление нового заказа
-        alt Заведение принимает заказ
-            RS->>A: PATCH /api/v1/partner/orders/{id}/status [accepted]
-            A-->>RS: 200 OK (status=accepted)
-            RS->>A: PATCH /api/v1/partner/orders/{id}/status [cooking]
-            A-->>RS: 200 OK (status=cooking)
-            RS->>A: PATCH /api/v1/partner/orders/{id}/status [ready]
-            A-->>RS: 200 OK (status=ready)
-            RS->>A: PATCH /api/v1/partner/orders/{id}/status [completed]
-            A-->>RS: 200 OK (status=completed)
+    alt Поступление нового заказа
+        A->>K: Outbox воркер публикует заказ в orders.created
+        K-->>RS: чтение события OrderCreatedDTO
+
+        alt Заведение готовит заказ (стандартный цикл)
+            RS->>K: отправка в orders.status.updates [accepted]
+            K-->>A: orders worker обновляет статус в БД на accepted
+            RS->>K: отправка в orders.status.updates [cooking]
+            K-->>A: orders worker обновляет статус в БД на cooking
+            RS->>K: отправка в orders.status.updates [ready]
+            K-->>A: orders worker обновляет статус в БД на ready
+            RS->>K: отправка в orders.status.updates [completed]
+            K-->>A: orders worker обновляет статус в БД на completed
         else Заведение отклоняет заказ
-            RS->>A: PATCH /api/v1/partner/orders/{id}/status [rejected]
-            A-->>RS: 200 OK (status=rejected)
-        else Заказ отменён клиентом до принятия
-            RS->>A: PATCH /api/v1/partner/orders/{id}/status [accepted]
-            A-->>RS: 409 Conflict (заказ уже отменён покупателем)
+            RS->>K: отправка в orders.status.updates [rejected]
+            K-->>A: orders worker обновляет статус в БД на rejected
+        else Заказ отменён клиентом до начала готовки
+            RS->>K: отправка в orders.status.updates [accepted]
+            K-->>A: orders worker проверяет FSM: переход запрещен, статус остается cancelled
         end
     end
 
@@ -42,3 +43,10 @@ sequenceDiagram
         A-->>RS: 200 OK (меню обновлено)
     end
 ```
+
+### Пояснения к сценарию
+
+1. **Синхронизация меню**: при старте сервис кухни отправляет текущее меню через идемпотентный REST-запрос (`PUT /api/v1/partner/menu`) с заголовком `X-API-KEY`.
+2. **Получение заказов**: вместо постоянных HTTP-запросов (поллинга) кухня подписана на топик Kafka `orders.created` и моментально получает созданные заказы.
+3. **Обновление статусов**: кухня публикует этапы готовки (`accepted -> cooking -> ready -> completed`) в топик Kafka `orders.status.updates`. Воркер `kitchen-api` считывает их и обновляет запись в базе данных.
+4. **Защита от конфликтов (FSM)**: если клиент уже отменил заказ в API, воркер `kitchen-api` при попытке перевести заказ в `accepted` отклоняет изменение через проверку конечного автомата, сохраняя статус `cancelled`.
