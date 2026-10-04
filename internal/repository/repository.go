@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"kitchen-api/internal/domain"
-	"log"
 	"os"
 	"strconv"
 	"time"
@@ -214,15 +213,20 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 		return err
 	}
 
-	if len(dt) < len(menuIDS) {
-		return domain.ErrInvalidData
+	menuMap := make(map[int64]menuItemRow, len(dt))
+	for _, row := range dt {
+		menuMap[row.ID] = row
 	}
 
-	for i := range dt {
-		if !dt[i].IsAvailable {
+	for _, item := range order.Items {
+		row, exists := menuMap[item.MenuItemID]
+		if !exists {
+			return domain.ErrInvalidData
+		}
+		if !row.IsAvailable {
 			return domain.ErrMenuItemUnavailable
 		}
-		if dt[i].PriceCents != order.Items[i].UnitPriceCents {
+		if row.PriceCents != item.UnitPriceCents {
 			return domain.ErrInvalidData
 		}
 	}
@@ -509,13 +513,11 @@ func (r *Repo) GetOutboxEvents(ctx context.Context, limit int) ([]OutboxItemRow,
 
 	rows, err := r.Data.Query(ctx, sql, limit)
 	if err != nil {
-		log.Printf("EROR HERE AFTER QUERY")
 		return nil, err
 	}
 
 	data, err := pgx.CollectRows(rows, pgx.RowToStructByName[OutboxItemRow])
 	if err != nil {
-		log.Printf("ERROR HERE AFTER COLLECTING ROWS")
 		return nil, err
 	}
 
