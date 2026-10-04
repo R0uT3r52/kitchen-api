@@ -30,6 +30,10 @@ func NewConsumer(brokerAddr, topic, groupID string) (*Consumer, error) {
 	return &Consumer{reader: r}, nil
 }
 
+func (c *Consumer) GetReader() *kafka.Reader {
+	return c.reader
+}
+
 func (c *Consumer) Close() error {
 	return c.reader.Close()
 }

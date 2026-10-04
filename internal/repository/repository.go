@@ -242,15 +242,15 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 		return err
 	}
 
-	tm := topicMessage{}
 	eventUUID := uuid.New().String()
-
-	tm.EventID = eventUUID
-	tm.TotalPrice = order.TotalPriceCents
-	tm.RestID = order.RestaurantID
-	tm.OrderID = order.ID
-	tm.CreatedAt = order.CreatedAt
-	tm.Items = make([]domain.OrderItem, 0, len(order.Items))
+	orderEvent := OrderCreatedEvent{
+		EventID:         eventUUID,
+		OrderID:         order.ID,
+		RestID:          order.RestaurantID,
+		TotalPriceCents: order.TotalPriceCents,
+		CreatedAt:       order.CreatedAt,
+		Items:           make([]domain.OrderItem, 0, len(order.Items)),
+	}
 
 	sqlItem := `
 		INSERT INTO order_items (order_id, menu_item_id, quantity, unit_price_cents)
@@ -269,7 +269,7 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 			return err
 		}
 
-		tm.Items = append(tm.Items, domain.OrderItem{
+		orderEvent.Items = append(orderEvent.Items, domain.OrderItem{
 			ID:             order.Items[i].ID,
 			OrderID:        order.ID,
 			MenuItemID:     order.Items[i].MenuItemID,
@@ -279,7 +279,7 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 		})
 	}
 
-	data, err := json.Marshal(tm)
+	data, err := json.Marshal(orderEvent)
 	if err != nil {
 		return err
 	}
@@ -302,7 +302,7 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 		INSERT INTO outbox_events (id, topic, payload, event_key)
 		VALUES ($1, $2, $3, $4);
 	`
-	_, err = tx.Exec(ctx, sqlOutboxEvent, eventUUID, topic, data, strconv.Itoa(int(tm.OrderID)))
+	_, err = tx.Exec(ctx, sqlOutboxEvent, eventUUID, topic, data, strconv.Itoa(int(order.ID)))
 	if err != nil {
 		return err
 	}
@@ -504,7 +504,8 @@ func (r *Repo) GetOutboxEvents(ctx context.Context, limit int) ([]OutboxItemRow,
 	FROM outbox_events
 	WHERE processed = false
 	ORDER BY created_at ASC
-	LIMIT $1;`
+	LIMIT $1
+	FOR UPDATE SKIP LOCKED;`
 
 	rows, err := r.Data.Query(ctx, sql, limit)
 	if err != nil {

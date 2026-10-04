@@ -65,7 +65,7 @@ services:
 
       environment:
         - TOPIC_ORDERS=orders.created
-        - TOPIC_STATUS=orders.status_updates
+        - TOPIC_STATUS=orders.status.updates
 
       entrypoint: [ "/bin/sh", "-c" ]
       command:
@@ -91,7 +91,7 @@ services:
       - DB_NAME=${POSTGRES_DB}
       - PORT=8080
       - TOPIC_ORDERS=orders.created
-      - TOPIC_STATUS=orders.status_updates
+      - TOPIC_STATUS=orders.status.updates
       - KAFKA_ADDR=kafkasvc:9092
 
     depends_on:
@@ -113,7 +113,7 @@ services:
       - POLL_INTERVAL=5s
       - STEP_DELAY=2s
       - TOPIC_ORDERS=orders.created
-      - TOPIC_STATUS=orders.status_updates
+      - TOPIC_STATUS=orders.status.updates
       - KAFKA_ADDR=kafkasvc:9092
     depends_on:
       kitchen-api:

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"kitchen-api/internal/domain"
 	"kitchen-api/internal/kafka"
@@ -80,6 +81,52 @@ func outboxWorkers(ctx context.Context, workersWg *sync.WaitGroup, numWorkers in
 	}
 }
 
+func ordersWorkers(ctx context.Context, workersWg *sync.WaitGroup, numWorkers int, repo *repository.Repo, consumer *kafka.Consumer) {
+	defer workersWg.Done()
+
+	log.Printf("Starting orders worker pool with %d workers", numWorkers)
+	reader := consumer.GetReader()
+
+	var wg sync.WaitGroup
+	for i := range numWorkers {
+		wg.Add(1)
+		go func(wID int) {
+			defer wg.Done()
+			for {
+				msg, err := reader.ReadMessage(ctx)
+				if err != nil {
+					if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+						log.Printf("[ordersWorker %d] Context canceled, stopping worker", wID)
+						return
+					}
+					log.Printf("[ordersWorker %d ERROR] failed to read message: %v", wID, err)
+					continue
+				}
+
+				var data repository.OrderStatusUpdatedEvent
+				if err := json.Unmarshal(msg.Value, &data); err != nil {
+					log.Printf("[ordersWorker %d ERROR] failed to unmarshal payload: %v", wID, err)
+					continue
+				}
+
+				if err := repo.UpdateOrderStatus(ctx, data.OrderID, domain.OrderStatus(data.Status)); err != nil {
+					if errors.Is(err, context.Canceled) {
+						return
+					}
+					log.Printf("[ordersWorker %d ERROR] failed to update status for order #%d to %s in database: %v",
+						wID, data.OrderID, data.Status, err)
+					continue
+				}
+
+				log.Printf("[ordersWorker %d] Updated order #%d status to %s", wID, data.OrderID, data.Status)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	log.Println("Orders workers stopped")
+}
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -104,7 +151,7 @@ func main() {
 
 	topicStatus := os.Getenv("TOPIC_STATUS")
 	if topicStatus == "" {
-		topicStatus = "orders.status_updates"
+		topicStatus = "orders.status.updates"
 	}
 
 	kafkaProducer, err := kafka.NewProducer(kafkaAddr, topicOrders)
@@ -142,8 +189,9 @@ func main() {
 	workersWg := &sync.WaitGroup{}
 	workerCtx, cancelWorkers := context.WithCancel(context.Background())
 
-	workersWg.Add(1)
+	workersWg.Add(2)
 	go outboxWorkers(workerCtx, workersWg, 1, repo, kafkaProducer)
+	go ordersWorkers(workerCtx, workersWg, 1, repo, kafkaConsumer)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

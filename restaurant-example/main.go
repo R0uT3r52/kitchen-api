@@ -12,13 +12,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"restaurant-example/kafka"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
-
-var ErrConflict = errors.New("conflict: order cancelled or invalid state transition")
 
 type MenuItemDTO struct {
 	ExternalID  string `json:"external_id"`
@@ -31,10 +31,6 @@ type UpsertMenuRequest struct {
 	Items []MenuItemDTO `json:"items"`
 }
 
-type UpdateStatusRequest struct {
-	Status string `json:"status"`
-}
-
 type OrderItemDTO struct {
 	ID             int64     `json:"id"`
 	OrderID        int64     `json:"order_id"`
@@ -44,15 +40,22 @@ type OrderItemDTO struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
-type OrderDTO struct {
-	ID              int64          `json:"id"`
-	UserID          string         `json:"user_id"`
+// Kafka Event DTOs
+type OrderCreatedDTO struct {
+	EventID         string         `json:"event_id"`
+	OrderID         int64          `json:"order_id"`
 	RestaurantID    int64          `json:"restaurant_id"`
-	Status          string         `json:"status"`
+	Items           []OrderItemDTO `json:"items"`
 	TotalPriceCents int64          `json:"total_price_cents"`
 	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	Items           []OrderItemDTO `json:"items,omitempty"`
+}
+
+type OrderStatusUpdatedDTO struct {
+	EventID      string    `json:"event_id"`
+	OrderID      int64     `json:"order_id"`
+	RestaurantID int64     `json:"restaurant_id"`
+	Status       string    `json:"status"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 var initialMenu = []MenuItemDTO{
@@ -139,82 +142,34 @@ func syncMenu(ctx context.Context, client *http.Client, apiURL, apiKey string, i
 	return nil
 }
 
-func getOrders(ctx context.Context, client *http.Client, apiURL, apiKey, status string) ([]OrderDTO, error) {
-	endpoint := strings.TrimRight(apiURL, "/") + "/api/v1/partner/orders"
-	if status != "" {
-		endpoint += "?status=" + status
+func sendOrderStatusUpdate(ctx context.Context, producer *kafka.Producer, orderID, restaurantID int64, status string) error {
+	event := OrderStatusUpdatedDTO{
+		EventID:      fmt.Sprintf("%d-%s-%d", orderID, status, time.Now().UnixMilli()),
+		OrderID:      orderID,
+		RestaurantID: restaurantID,
+		Status:       status,
+		UpdatedAt:    time.Now(),
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("X-API-KEY", apiKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch orders: %w", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var orders []OrderDTO
-	if err := json.NewDecoder(resp.Body).Decode(&orders); err != nil {
-		return nil, fmt.Errorf("failed to decode orders json: %w", err)
-	}
-
-	return orders, nil
-}
-
-func updateOrderStatus(ctx context.Context, client *http.Client, apiURL, apiKey string, orderID int64, newStatus string) error {
-	payload, err := json.Marshal(UpdateStatusRequest{Status: newStatus})
-	if err != nil {
-		return fmt.Errorf("failed to marshal status: %w", err)
-	}
-
-	endpoint := fmt.Sprintf("%s/api/v1/partner/orders/%d/status", strings.TrimRight(apiURL, "/"), orderID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, endpoint, bytes.NewReader(payload))
+	payload, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-KEY", apiKey)
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("status update request failed: %w", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	if resp.StatusCode == http.StatusConflict {
-		return ErrConflict
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
-	}
-
-	return nil
+	return producer.Publish(ctx, strconv.Itoa(int(orderID)), payload)
 }
 
-func processOrder(ctx context.Context, client *http.Client, apiURL, apiKey string, order OrderDTO, stepDelay time.Duration, activeOrders *sync.Map, wg *sync.WaitGroup) {
+func processOrder(ctx context.Context, producer *kafka.Producer, order OrderCreatedDTO, stepDelay time.Duration, activeOrders *sync.Map, wg *sync.WaitGroup) {
 	defer wg.Done()
-	defer activeOrders.Delete(order.ID)
+	defer activeOrders.Delete(order.OrderID)
 
-	orderID := order.ID
+	orderID := order.OrderID
 	log.Printf("[Order #%d] Received new order with %d item(s), total %d cents",
 		orderID, len(order.Items), order.TotalPriceCents)
 
-	if err := updateOrderStatus(ctx, client, apiURL, apiKey, orderID, "accepted"); err != nil {
-		if errors.Is(err, ErrConflict) {
-			log.Printf("[Order #%d] Order was cancelled by customer before acceptance, stopping processing", orderID)
-			return
-		}
-		log.Printf("[Order #%d] Failed to accept order: %v", orderID, err)
+	// 1. accepted
+	if err := sendOrderStatusUpdate(ctx, producer, orderID, order.RestaurantID, "accepted"); err != nil {
+		log.Printf("[Order #%d] Failed to send status accepted: %v", orderID, err)
 		return
 	}
 	log.Printf("[Order #%d] Status updated: created -> accepted", orderID)
@@ -223,12 +178,9 @@ func processOrder(ctx context.Context, client *http.Client, apiURL, apiKey strin
 		return
 	}
 
-	if err := updateOrderStatus(ctx, client, apiURL, apiKey, orderID, "cooking"); err != nil {
-		if errors.Is(err, ErrConflict) {
-			log.Printf("[Order #%d] Order was cancelled by customer before cooking, stopping processing", orderID)
-			return
-		}
-		log.Printf("[Order #%d] Failed to start cooking: %v", orderID, err)
+	// 2. cooking
+	if err := sendOrderStatusUpdate(ctx, producer, orderID, order.RestaurantID, "cooking"); err != nil {
+		log.Printf("[Order #%d] Failed to send status cooking: %v", orderID, err)
 		return
 	}
 	log.Printf("[Order #%d] Status updated: accepted -> cooking", orderID)
@@ -237,8 +189,9 @@ func processOrder(ctx context.Context, client *http.Client, apiURL, apiKey strin
 		return
 	}
 
-	if err := updateOrderStatus(ctx, client, apiURL, apiKey, orderID, "ready"); err != nil {
-		log.Printf("[Order #%d] Failed to set status ready: %v", orderID, err)
+	// 3. ready
+	if err := sendOrderStatusUpdate(ctx, producer, orderID, order.RestaurantID, "ready"); err != nil {
+		log.Printf("[Order #%d] Failed to send status ready: %v", orderID, err)
 		return
 	}
 	log.Printf("[Order #%d] Status updated: cooking -> ready", orderID)
@@ -247,8 +200,9 @@ func processOrder(ctx context.Context, client *http.Client, apiURL, apiKey strin
 		return
 	}
 
-	if err := updateOrderStatus(ctx, client, apiURL, apiKey, orderID, "completed"); err != nil {
-		log.Printf("[Order #%d] Failed to complete order: %v", orderID, err)
+	// 4. completed
+	if err := sendOrderStatusUpdate(ctx, producer, orderID, order.RestaurantID, "completed"); err != nil {
+		log.Printf("[Order #%d] Failed to send status completed: %v", orderID, err)
 		return
 	}
 	log.Printf("[Order #%d] Status updated: ready -> completed. Order done!", orderID)
@@ -263,31 +217,50 @@ func sleepContext(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func pollOrders(ctx context.Context, client *http.Client, apiURL, apiKey string, stepDelay time.Duration, activeOrders *sync.Map, wg *sync.WaitGroup) {
-	orders, err := getOrders(ctx, client, apiURL, apiKey, "created")
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			log.Printf("[polling] Error fetching created orders: %v", err)
-		}
-		return
-	}
+func pollKafkaOrders(ctx context.Context, wg *sync.WaitGroup, stepDelay time.Duration, consumer *kafka.Consumer, producer *kafka.Producer, activeOrders *sync.Map) {
+	defer wg.Done()
+	reader := consumer.GetReader()
 
-	for _, order := range orders {
-		if _, loaded := activeOrders.LoadOrStore(order.ID, true); !loaded {
-			wg.Add(1)
-			go processOrder(ctx, client, apiURL, apiKey, order, stepDelay, activeOrders, wg)
+	log.Println("[polling] Started polling Kafka for new orders...")
+
+	for {
+		msg, err := reader.ReadMessage(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				log.Println("[polling] Context canceled, stopping Kafka order consumer")
+				return
+			}
+			log.Printf("[polling] Error reading message from Kafka: %v", err)
+			continue
 		}
+
+		var order OrderCreatedDTO
+		if err := json.Unmarshal(msg.Value, &order); err != nil {
+			log.Printf("[polling] Error unmarshaling order created event: %v", err)
+			continue
+		}
+
+		if _, loaded := activeOrders.LoadOrStore(order.OrderID, true); loaded {
+			log.Printf("[Order #%d] Already in progress, skipping duplicate event", order.OrderID)
+			continue
+		}
+
+		wg.Add(1)
+		go processOrder(ctx, producer, order, stepDelay, activeOrders, wg)
 	}
 }
 
 func main() {
 	apiURL := getEnv("API_URL", "http://localhost:8080")
 	apiKey := getEnv("PARTNER_API_KEY", "partner_api_key_dominos")
-	pollInterval := getEnvDuration("POLL_INTERVAL", 5*time.Second)
 	stepDelay := getEnvDuration("STEP_DELAY", 2*time.Second)
+	kafkaAddr := getEnv("KAFKA_ADDR", "localhost:9092")
+	readerTopic := getEnv("TOPIC_ORDERS", "orders.created")
+	writerTopic := getEnv("TOPIC_STATUS", "orders.status.updates")
+	consumerGroupID := getEnv("KAFKA_GROUP_ID", "restaurant-example-dominos")
 
-	log.Printf("restaurant-example started for api_url=%s, api_key=%s, poll_interval=%v, step_delay=%v",
-		apiURL, apiKey, pollInterval, stepDelay)
+	log.Printf("restaurant-example started for api_url=%s, api_key=%s, step_delay=%v, kafka_addr=%s, reader_topic=%s, writer_topic=%s",
+		apiURL, apiKey, stepDelay, kafkaAddr, readerTopic, writerTopic)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -306,23 +279,26 @@ func main() {
 	}
 	log.Println("Menu synchronized successfully!")
 
+	consumer, err := kafka.NewConsumer(kafkaAddr, readerTopic, consumerGroupID)
+	if err != nil {
+		log.Fatalf("failed to initialize kafka consumer: %v", err)
+	}
+	defer consumer.Close() //nolint:errcheck
+
+	producer, err := kafka.NewProducer(kafkaAddr, writerTopic)
+	if err != nil {
+		log.Fatalf("failed to initialize kafka producer: %v", err)
+	}
+	defer producer.Close() //nolint:errcheck
+
 	var activeOrders sync.Map
 	var wg sync.WaitGroup
 
-	pollOrders(ctx, httpClient, apiURL, apiKey, stepDelay, &activeOrders, &wg)
+	wg.Add(1)
+	go pollKafkaOrders(ctx, &wg, stepDelay, consumer, producer, &activeOrders)
 
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("Termination signal received, waiting for ongoing orders to finish...")
-			wg.Wait()
-			log.Println("restaurant-example stopped cleanly")
-			return
-		case <-ticker.C:
-			pollOrders(ctx, httpClient, apiURL, apiKey, stepDelay, &activeOrders, &wg)
-		}
-	}
+	<-ctx.Done()
+	log.Println("Termination signal received, waiting for ongoing orders to finish...")
+	wg.Wait()
+	log.Println("restaurant-example stopped cleanly")
 }

@@ -71,11 +71,19 @@ type OutboxItemRow struct {
 	ProcessedAt *time.Time `db:"processed_at"`
 }
 
-type topicMessage struct {
-	EventID    string             `json:"event_id"`
-	OrderID    int64              `json:"order_id"`
-	RestID     int64              `json:"restaurant_id"`
-	Items      []domain.OrderItem `json:"items"`
-	TotalPrice int64              `json:"total_price_cents"`
-	CreatedAt  time.Time          `json:"created_at"`
+type OrderCreatedEvent struct {
+	EventID         string             `json:"event_id"`
+	OrderID         int64              `json:"order_id"`
+	RestID          int64              `json:"restaurant_id"`
+	Items           []domain.OrderItem `json:"items"`
+	TotalPriceCents int64              `json:"total_price_cents"`
+	CreatedAt       time.Time          `json:"created_at"`
+}
+
+type OrderStatusUpdatedEvent struct {
+	EventID      string    `json:"event_id"`
+	OrderID      int64     `json:"order_id"`
+	RestaurantID int64     `json:"restaurant_id"`
+	Status       string    `json:"status"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
