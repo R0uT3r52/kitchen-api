@@ -25,7 +25,7 @@ flowchart TB
 
     OUTBOX -->|"GetOutboxEvents / MarkProcessed"| REPO
     OUTBOX -->|"Publish"| KAFKA_PKG
-    KAFKA_PKG -->|"orders.created"| Kafka
+    KAFKA_PKG -->|"orders.created,<br/>orders.cancelled"| Kafka
 
     Kafka -->|"orders.status.updates"| KAFKA_PKG
     KAFKA_PKG -->|"ReadMessage"| ORDERS
@@ -36,7 +36,7 @@ flowchart TB
 
 1. **`web`**: приём входящих HTTP-запросов, валидация DTO, проверка `X-API-KEY` заведений, вызов бизнес-логики.
 2. **`domain`**: ядро бизнес-логики (`OrderService`, `PartnerService`) и матрица допустимых переходов конечного автомата (`CanTransition`).
-3. **`repository`**: реализация интерфейсов доступа к PostgreSQL на `jackc/pgx/v5`. Атомарно сохраняет заказы и записи в `outbox_events` в единой транзакции, блокирует строки через `FOR UPDATE` и выбирает пачки событий с `FOR UPDATE SKIP LOCKED`.
-4. **`outboxWorkers`**: фоновая горутина, опрашивающая таблицу `outbox_events` каждые 5 секунд и отправляющая события создания заказов в топик Kafka `orders.created`.
+3. **`repository`**: реализация интерфейсов доступа к PostgreSQL на `jackc/pgx/v5`. Атомарно сохраняет заказы, отмены и записи в `outbox_events` в единой транзакции, блокирует строки через `FOR UPDATE` и выбирает пачки событий с `FOR UPDATE SKIP LOCKED`.
+4. **`outboxWorkers`**: фоновая горутина, опрашивающая таблицу `outbox_events` каждые 5 секунд и отправляющая события создания (`orders.created`) и отмены (`orders.cancelled`) в соответствующие топики Kafka.
 5. **`ordersWorkers`**: фоновая горутина, вычитывающая события смены статусов заказов из топика Kafka `orders.status.updates` и передающая их в репозиторий для обновления в БД.
-6. **`kafka`**: обёртка над библиотекой `segmentio/kafka-go` для создания `Producer` и `Consumer`.
+6. **`kafka`**: обёртка над библиотекой `segmentio/kafka-go` для создания `Producer` (с поддержкой динамической маршрутизации по топикам) и `Consumer`.

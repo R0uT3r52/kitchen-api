@@ -11,8 +11,9 @@ import (
 
 type Repo struct {
 	Data        *pgxpool.Pool
-	writerTopic string
-	readerTopic string
+	ordersTopic string
+	statusTopic string
+	cancelTopic string
 }
 
 type OrderEvent struct {
@@ -83,6 +84,14 @@ type OrderCreatedEvent struct {
 }
 
 type OrderStatusUpdatedEvent struct {
+	EventID      string    `json:"event_id"`
+	OrderID      int64     `json:"order_id"`
+	RestaurantID int64     `json:"restaurant_id"`
+	Status       string    `json:"status"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type OrderCancelledEvent struct {
 	EventID      string    `json:"event_id"`
 	OrderID      int64     `json:"order_id"`
 	RestaurantID int64     `json:"restaurant_id"`

@@ -65,11 +65,12 @@ func GetDB(ctx context.Context) (*pgxpool.Pool, error) {
 	return db, nil
 }
 
-func NewRepo(db *pgxpool.Pool, readerTopic string, writerTopic string) *Repo {
+func NewRepo(db *pgxpool.Pool, ordersTopic, statusTopic, cancelTopic string) *Repo {
 	return &Repo{
 		Data:        db,
-		readerTopic: readerTopic,
-		writerTopic: writerTopic,
+		ordersTopic: ordersTopic,
+		statusTopic: statusTopic,
+		cancelTopic: cancelTopic,
 	}
 }
 
@@ -303,7 +304,7 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 		INSERT INTO outbox_events (id, topic, payload, event_key)
 		VALUES ($1, $2, $3, $4);
 	`
-	_, err = tx.Exec(ctx, sqlOutboxEvent, eventUUID, r.writerTopic, data, strconv.Itoa(int(order.ID)))
+	_, err = tx.Exec(ctx, sqlOutboxEvent, eventUUID, r.ordersTopic, data, strconv.Itoa(int(order.ID)))
 	if err != nil {
 		return err
 	}
@@ -477,8 +478,15 @@ func (r *Repo) UpdateOrderStatus(ctx context.Context, orderID int64, newStatus d
 		return domain.ErrInvalidStatusTransition
 	}
 
-	sqlUpdate := `UPDATE orders SET status=$1 WHERE id=$2;`
-	_, err = tx.Exec(ctx, sqlUpdate, newStatus, orderID)
+	var restID int64
+	var updated_at time.Time
+	sqlUpdate := `
+		UPDATE orders SET status=$1 WHERE id=$2
+		RETURNING restaurant_id, updated_at;
+	`
+
+	err = tx.QueryRow(ctx, sqlUpdate, newStatus, orderID).Scan(&restID, &updated_at)
+	// _, err = tx.Exec(ctx, sqlUpdate, newStatus, orderID)
 	if err != nil {
 		return err
 	}
@@ -490,6 +498,31 @@ func (r *Repo) UpdateOrderStatus(ctx context.Context, orderID int64, newStatus d
 	_, err = tx.Exec(ctx, sqlEvent, orderID, oldStatus, newStatus)
 	if err != nil {
 		return err
+	}
+
+	if newStatus == domain.StatusCancelled {
+		ord := OrderCancelledEvent{
+			EventID:      fmt.Sprintf("%d-%s-%d", orderID, newStatus, time.Now().UnixMilli()),
+			OrderID:      orderID,
+			RestaurantID: restID,
+			Status:       string(newStatus),
+			UpdatedAt:    updated_at,
+		}
+
+		data, err := json.Marshal(ord)
+		if err != nil {
+			return err
+		}
+
+		sqlOutbox := `
+			INSERT INTO outbox_events(topic, payload, event_key)
+			VALUES ($1, $2, $3);
+		`
+
+		_, err = tx.Exec(ctx, sqlOutbox, r.cancelTopic, data, strconv.Itoa(int(orderID)))
+		if err != nil {
+			return err
+		}
 	}
 
 	return tx.Commit(ctx)
