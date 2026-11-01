@@ -65,11 +65,11 @@ func GetDB(ctx context.Context) (*pgxpool.Pool, error) {
 	return db, nil
 }
 
-func NewRepo(db *pgxpool.Pool, readerTopic, writerTopic, cancelTopic string) *Repo {
+func NewRepo(db *pgxpool.Pool, ordersTopic, statusTopic, cancelTopic string) *Repo {
 	return &Repo{
 		Data:        db,
-		readerTopic: readerTopic,
-		writerTopic: writerTopic,
+		ordersTopic: ordersTopic,
+		statusTopic: statusTopic,
 		cancelTopic: cancelTopic,
 	}
 }
@@ -304,7 +304,7 @@ func (r *Repo) CreateOrder(ctx context.Context, order *domain.Order) error {
 		INSERT INTO outbox_events (id, topic, payload, event_key)
 		VALUES ($1, $2, $3, $4);
 	`
-	_, err = tx.Exec(ctx, sqlOutboxEvent, eventUUID, r.writerTopic, data, strconv.Itoa(int(order.ID)))
+	_, err = tx.Exec(ctx, sqlOutboxEvent, eventUUID, r.ordersTopic, data, strconv.Itoa(int(order.ID)))
 	if err != nil {
 		return err
 	}
@@ -519,7 +519,6 @@ func (r *Repo) UpdateOrderStatus(ctx context.Context, orderID int64, newStatus d
 			VALUES ($1, $2, $3);
 		`
 
-		// TODO: rename all topics to appropriate names (not just readerTopic/writerTopic)
 		_, err = tx.Exec(ctx, sqlOutbox, r.cancelTopic, data, strconv.Itoa(int(orderID)))
 		if err != nil {
 			return err

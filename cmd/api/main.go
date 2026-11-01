@@ -144,19 +144,19 @@ func main() {
 		kafkaAddr = "localhost:9092"
 	}
 
-	topicOrders := os.Getenv("TOPIC_ORDERS")
-	if topicOrders == "" {
-		topicOrders = "orders.created"
+	ordersTopic := os.Getenv("TOPIC_ORDERS")
+	if ordersTopic == "" {
+		ordersTopic = "orders.created"
 	}
 
-	topicStatus := os.Getenv("TOPIC_STATUS")
-	if topicStatus == "" {
-		topicStatus = "orders.status.updates"
+	statusTopic := os.Getenv("TOPIC_STATUS")
+	if statusTopic == "" {
+		statusTopic = "orders.status.updates"
 	}
 
-	topicCancel := os.Getenv("TOPIC_CANCEL")
-	if topicCancel == "" {
-		topicCancel = "orders.cancelled"
+	cancelTopic := os.Getenv("TOPIC_CANCEL")
+	if cancelTopic == "" {
+		cancelTopic = "orders.cancelled"
 	}
 
 	kafkaProducer, err := kafka.NewProducer(kafkaAddr)
@@ -165,13 +165,13 @@ func main() {
 	}
 	defer kafkaProducer.Close() //nolint:errcheck
 
-	kafkaConsumer, err := kafka.NewConsumer(kafkaAddr, topicStatus, "order_status_reader")
+	kafkaConsumer, err := kafka.NewConsumer(kafkaAddr, statusTopic, "order_status_reader")
 	if err != nil {
 		log.Fatalf("failed to init kafka consumer: %v", err)
 	}
 	defer kafkaConsumer.Close() //nolint:errcheck
 
-	repo := repository.NewRepo(dbPool, topicStatus, topicOrders, topicCancel)
+	repo := repository.NewRepo(dbPool, ordersTopic, statusTopic, cancelTopic)
 	orderService := domain.NewOrderService(repo)
 	partnerService := domain.NewPartnerService(repo)
 

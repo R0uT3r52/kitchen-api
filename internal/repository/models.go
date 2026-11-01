@@ -11,8 +11,8 @@ import (
 
 type Repo struct {
 	Data        *pgxpool.Pool
-	writerTopic string
-	readerTopic string
+	ordersTopic string
+	statusTopic string
 	cancelTopic string
 }
 

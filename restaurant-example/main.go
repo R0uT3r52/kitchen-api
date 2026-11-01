@@ -320,13 +320,13 @@ func main() {
 	apiKey := getEnv("PARTNER_API_KEY", "partner_api_key_dominos")
 	stepDelay := getEnvDuration("STEP_DELAY", 2*time.Second)
 	kafkaAddr := getEnv("KAFKA_ADDR", "localhost:9092")
-	readerTopic := getEnv("TOPIC_ORDERS", "orders.created")
-	writerTopic := getEnv("TOPIC_STATUS", "orders.status.updates")
+	ordersTopic := getEnv("TOPIC_ORDERS", "orders.created")
+	statusTopic := getEnv("TOPIC_STATUS", "orders.status.updates")
 	cancelTopic := getEnv("TOPIC_CANCEL", "orders.cancelled")
 	consumerGroupID := getEnv("KAFKA_GROUP_ID", "restaurant-example-dominos")
 
-	log.Printf("restaurant-example started for api_url=%s, api_key=%s, step_delay=%v, kafka_addr=%s, reader_topic=%s, writer_topic=%s",
-		apiURL, apiKey, stepDelay, kafkaAddr, readerTopic, writerTopic)
+	log.Printf("restaurant-example started for api_url=%s, api_key=%s, step_delay=%v, kafka_addr=%s, orders_topic=%s, status_topic=%s, cancel_topic=%s",
+		apiURL, apiKey, stepDelay, kafkaAddr, ordersTopic, statusTopic, cancelTopic)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -345,7 +345,7 @@ func main() {
 	}
 	log.Println("Menu synchronized successfully!")
 
-	consumer, err := kafka.NewConsumer(kafkaAddr, readerTopic, consumerGroupID)
+	consumer, err := kafka.NewConsumer(kafkaAddr, ordersTopic, consumerGroupID)
 	if err != nil {
 		log.Fatalf("failed to initialize kafka consumer: %v", err)
 	}
@@ -356,7 +356,7 @@ func main() {
 		log.Fatalf("failed to initialize kafka consumer: %v", err)
 	}
 
-	producer, err := kafka.NewProducer(kafkaAddr, writerTopic)
+	producer, err := kafka.NewProducer(kafkaAddr, statusTopic)
 	if err != nil {
 		log.Fatalf("failed to initialize kafka producer: %v", err)
 	}

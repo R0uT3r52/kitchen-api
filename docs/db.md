@@ -85,5 +85,5 @@ erDiagram
    - Каждая смена статуса фиксируется записью `(order_id, old_status, new_status, created_at)`.
 
 6. **`outbox_events`** — таблица для паттерна Transactional Outbox.
-   - При оформлении заказа запись о событии кладется в `outbox_events` в одной транзакции с заказом (`orders`).
+   - При оформлении или отмене заказа запись о событии кладется в `outbox_events` в одной транзакции со сменой статуса заказа (`orders`).
    - Частичный индекс: `idx_outbox_unprocessed ON (created_at) WHERE processed = false` для быстрой выборки необработанных событий фоновым воркером (`FOR UPDATE SKIP LOCKED`).
