@@ -454,6 +454,51 @@ func TestUpdateOrderStatus_InvalidTransitions(t *testing.T) {
 			t.Errorf("expected ErrOrderAlreadyCancelled from repo, got %v", err)
 		}
 	})
+
+	t.Run("cancelling order must create outbox_events record", func(t *testing.T) {
+		order := domain.Order{
+			UserID:          "user_p2",
+			RestaurantID:    restID,
+			Status:          domain.StatusCreated,
+			TotalPriceCents: 60000,
+			Items:           []domain.OrderItem{{MenuItemID: itemID, Quantity: 1, UnitPriceCents: 60000}},
+		}
+
+		var initialOutboxEvents int
+		_ = testPool.QueryRow(ctx, "SELECT COUNT(*) FROM outbox_events;").Scan(&initialOutboxEvents)
+
+		if err := testRepo.CreateOrder(ctx, &order); err != nil {
+			t.Fatalf("failed to create order: %v", err)
+		}
+		initialOutboxEvents += 1
+
+		// First cancellation allowed
+		if err := testRepo.UpdateOrderStatus(ctx, order.ID, domain.StatusCancelled); err != nil {
+			t.Fatalf("expected cancellation to succeed, got %v", err)
+		}
+		initialOutboxEvents += 1
+
+		// Cancelling already cancelled order via OrderService = ErrOrderAlreadyCancelled
+		orderService := domain.NewOrderService(testRepo)
+		err := orderService.CancelOrder(ctx, order.ID, "user_p2")
+		if !errors.Is(err, domain.ErrOrderAlreadyCancelled) {
+			t.Errorf("expected ErrOrderAlreadyCancelled from orderService.CancelOrder, got %v", err)
+		}
+
+		// Transition from cancelled to accepted via repo = ErrOrderAlreadyCancelled
+		err = testRepo.UpdateOrderStatus(ctx, order.ID, domain.StatusAccepted)
+		if !errors.Is(err, domain.ErrOrderAlreadyCancelled) {
+			t.Errorf("expected ErrOrderAlreadyCancelled from repo, got %v", err)
+		}
+
+		var count int
+		_ = testPool.QueryRow(ctx, "SELECT COUNT(*) FROM outbox_events;").Scan(&count)
+		if count-initialOutboxEvents != 0 {
+			t.Errorf("expected to have exactly %d record of cancelled outboxEvent, got: %d", count, initialOutboxEvents)
+		}
+
+	})
+
 }
 
 func TestUpdateOrderStatus_SameStatusNoOp(t *testing.T) {

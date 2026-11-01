@@ -58,6 +58,14 @@ type OrderStatusUpdatedDTO struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+type OrderStatusCancelledDTO struct {
+	EventID      string    `json:"event_id"`
+	OrderID      int64     `json:"order_id"`
+	RestaurantID int64     `json:"restaurant_id"`
+	Status       string    `json:"status"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 var initialMenu = []MenuItemDTO{
 	{ExternalID: "pizza_margharita", Name: "Пицца Маргарита", PriceCents: 450000, IsAvailable: true},
 	{ExternalID: "pizza_pepperoni", Name: "Пицца Пепперони", PriceCents: 550000, IsAvailable: true},
@@ -161,11 +169,23 @@ func sendOrderStatusUpdate(ctx context.Context, producer *kafka.Producer, orderI
 
 func processOrder(ctx context.Context, producer *kafka.Producer, order OrderCreatedDTO, stepDelay time.Duration, activeOrders *sync.Map, wg *sync.WaitGroup) {
 	defer wg.Done()
-	defer activeOrders.Delete(order.OrderID)
+	defer func() {
+		cancel, loaded := activeOrders.Load(order.OrderID)
+		if loaded {
+			cancelFunc := cancel.(context.CancelFunc)
+			activeOrders.Delete(order.OrderID)
+			cancelFunc()
+		}
+	}()
 
 	orderID := order.OrderID
 	log.Printf("[Order #%d] Received new order with %d item(s), total %d cents",
 		orderID, len(order.Items), order.TotalPriceCents)
+
+	if ctx.Err() != nil {
+		log.Printf("[Order #%d] Order cancelled before processing started", order.OrderID)
+		return
+	}
 
 	// 1. accepted
 	if err := sendOrderStatusUpdate(ctx, producer, orderID, order.RestaurantID, "accepted"); err != nil {
@@ -175,6 +195,7 @@ func processOrder(ctx context.Context, producer *kafka.Producer, order OrderCrea
 	log.Printf("[Order #%d] Status updated: created -> accepted", orderID)
 
 	if !sleepContext(ctx, stepDelay) {
+		log.Printf("[Order #%d] Cooking pipeline terminated due to order cancellation", order.OrderID)
 		return
 	}
 
@@ -186,6 +207,7 @@ func processOrder(ctx context.Context, producer *kafka.Producer, order OrderCrea
 	log.Printf("[Order #%d] Status updated: accepted -> cooking", orderID)
 
 	if !sleepContext(ctx, stepDelay) {
+		log.Printf("[Order #%d] Cooking pipeline terminated due to order cancellation", order.OrderID)
 		return
 	}
 
@@ -197,6 +219,7 @@ func processOrder(ctx context.Context, producer *kafka.Producer, order OrderCrea
 	log.Printf("[Order #%d] Status updated: cooking -> ready", orderID)
 
 	if !sleepContext(ctx, stepDelay) {
+		log.Printf("[Order #%d] Cooking pipeline terminated due to order cancellation", order.OrderID)
 		return
 	}
 
@@ -217,7 +240,7 @@ func sleepContext(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func pollKafkaOrders(ctx context.Context, wg *sync.WaitGroup, stepDelay time.Duration, consumer *kafka.Consumer, producer *kafka.Producer, activeOrders *sync.Map) {
+func pollKafkaOrders(ctx context.Context, wg *sync.WaitGroup, stepDelay time.Duration, consumer *kafka.Consumer, producer *kafka.Producer, activeOrders, cancelledOrders *sync.Map) {
 	defer wg.Done()
 
 	log.Println("[polling] Started polling Kafka for new orders...")
@@ -239,14 +262,56 @@ func pollKafkaOrders(ctx context.Context, wg *sync.WaitGroup, stepDelay time.Dur
 			continue
 		}
 
-		if _, loaded := activeOrders.LoadOrStore(order.OrderID, true); loaded {
+		if _, loaded := activeOrders.Load(order.OrderID); loaded {
 			log.Printf("[Order #%d] Already in progress, skipping duplicate event", order.OrderID)
 			continue
 		}
 
+		if _, loaded := cancelledOrders.Load(order.OrderID); loaded {
+			log.Printf("[Order #%d] Order was cancelled before cooking", order.OrderID)
+			continue
+		}
+
+		orderCtx, cancel := context.WithCancel(ctx)
+		activeOrders.Store(order.OrderID, cancel)
+
 		wg.Add(1)
 		// context.Background() to prevent cooking process stop
-		go processOrder(context.Background(), producer, order, stepDelay, activeOrders, wg)
+		go processOrder(orderCtx, producer, order, stepDelay, activeOrders, wg)
+	}
+}
+
+func pollKafkaCancelledOrders(ctx context.Context, wg *sync.WaitGroup, consumer *kafka.Consumer, activeOrders, cancelledOrders *sync.Map) {
+	defer wg.Done()
+
+	log.Println("[cancel polling] Start polling kafka for cancelled orders...")
+
+	for {
+		msg, err := consumer.ReadMessage(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				log.Println("[cancel polling] Stopped polling kafka for cancelled orders...")
+				return
+			}
+			log.Printf("[cancel polling] Error reading message from Kafka: %v", err)
+			continue
+		}
+
+		var order OrderStatusCancelledDTO
+		if err := json.Unmarshal(msg.Value, &order); err != nil {
+			log.Printf("[cancel polling] Failed to unmarshal cancelled order: %v", err)
+			continue
+		}
+
+		if cancel, loaded := activeOrders.Load(order.OrderID); loaded {
+			cancelFunc := cancel.(context.CancelFunc)
+			log.Printf("[cancel polling] Cancelling Order #%d with status %s", order.OrderID, order.Status)
+			cancelFunc()
+			continue
+		}
+
+		cancelledOrders.Store(order.OrderID, struct{}{})
+		log.Printf("[cancel polling] Got cancel message, but no active order found")
 	}
 }
 
@@ -257,6 +322,7 @@ func main() {
 	kafkaAddr := getEnv("KAFKA_ADDR", "localhost:9092")
 	readerTopic := getEnv("TOPIC_ORDERS", "orders.created")
 	writerTopic := getEnv("TOPIC_STATUS", "orders.status.updates")
+	cancelTopic := getEnv("TOPIC_CANCEL", "orders.cancelled")
 	consumerGroupID := getEnv("KAFKA_GROUP_ID", "restaurant-example-dominos")
 
 	log.Printf("restaurant-example started for api_url=%s, api_key=%s, step_delay=%v, kafka_addr=%s, reader_topic=%s, writer_topic=%s",
@@ -285,19 +351,25 @@ func main() {
 	}
 	defer consumer.Close() //nolint:errcheck
 
+	consumerCancel, err := kafka.NewConsumer(kafkaAddr, cancelTopic, consumerGroupID+"-cancel")
+	if err != nil {
+		log.Fatalf("failed to initialize kafka consumer: %v", err)
+	}
+
 	producer, err := kafka.NewProducer(kafkaAddr, writerTopic)
 	if err != nil {
 		log.Fatalf("failed to initialize kafka producer: %v", err)
 	}
 	defer producer.Close() //nolint:errcheck
 
-	var activeOrders sync.Map
+	var activeOrders, cancelledOrders sync.Map
 	var wg sync.WaitGroup
 
 	pollCtx, cancelPoll := context.WithCancel(context.Background())
 
-	wg.Add(1)
-	go pollKafkaOrders(pollCtx, &wg, stepDelay, consumer, producer, &activeOrders)
+	wg.Add(2)
+	go pollKafkaOrders(pollCtx, &wg, stepDelay, consumer, producer, &activeOrders, &cancelledOrders)
+	go pollKafkaCancelledOrders(pollCtx, &wg, consumerCancel, &activeOrders, &cancelledOrders)
 
 	<-ctx.Done()
 	cancelPoll()

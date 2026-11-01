@@ -66,11 +66,12 @@ services:
       environment:
         - TOPIC_ORDERS=orders.created
         - TOPIC_STATUS=orders.status.updates
+        - TOPIC_CANCEL=orders.cancelled
 
       entrypoint: [ "/bin/sh", "-c" ]
       command:
         - |
-          for topic in $$TOPIC_ORDERS $$TOPIC_STATUS; do
+          for topic in $$TOPIC_ORDERS $$TOPIC_STATUS $$TOPIC_CANCEL; do
             /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafkasvc:9092 --create --if-not-exists --topic "$$topic" --partitions 3 --replication-factor 1
           done
       networks:
@@ -92,6 +93,7 @@ services:
       - PORT=8080
       - TOPIC_ORDERS=orders.created
       - TOPIC_STATUS=orders.status.updates
+      - TOPIC_CANCEL=orders.cancelled
       - KAFKA_ADDR=kafkasvc:9092
 
     depends_on:
@@ -111,9 +113,10 @@ services:
       - API_URL=http://kitchen-api:8080
       - PARTNER_API_KEY=partner_api_key_dominos
       - POLL_INTERVAL=5s
-      - STEP_DELAY=2s
+      - STEP_DELAY=5s
       - TOPIC_ORDERS=orders.created
       - TOPIC_STATUS=orders.status.updates
+      - TOPIC_CANCEL=orders.cancelled
       - KAFKA_ADDR=kafkasvc:9092
     depends_on:
       kitchen-api:

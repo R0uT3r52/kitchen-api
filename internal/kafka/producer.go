@@ -12,17 +12,13 @@ type Producer struct {
 	writer *kafka.Writer
 }
 
-func NewProducer(brokerAddr, topic string) (*Producer, error) {
+func NewProducer(brokerAddr string) (*Producer, error) {
 	if brokerAddr == "" {
 		return nil, fmt.Errorf("kafka broker address must not be empty")
-	}
-	if topic == "" {
-		return nil, fmt.Errorf("kafka topic must not be empty")
 	}
 
 	w := &kafka.Writer{
 		Addr:         kafka.TCP(brokerAddr),
-		Topic:        topic,
 		Balancer:     &kafka.Hash{},
 		RequiredAcks: kafka.RequireAll,
 		MaxAttempts:  3,
@@ -33,10 +29,11 @@ func NewProducer(brokerAddr, topic string) (*Producer, error) {
 	return &Producer{writer: w}, nil
 }
 
-func (p *Producer) Publish(ctx context.Context, key string, payload []byte) error {
+func (p *Producer) Publish(ctx context.Context, topic, key string, payload []byte) error {
 	return p.writer.WriteMessages(ctx, kafka.Message{
 		Key:   []byte(key),
 		Value: payload,
+		Topic: topic,
 	})
 }
 

@@ -62,7 +62,7 @@ func outboxWorkers(ctx context.Context, workersWg *sync.WaitGroup, numWorkers in
 							return
 						default:
 							// Publish event to Kafka
-							if err := producer.Publish(ctx, event.EventKey, event.Payload); err != nil {
+							if err := producer.Publish(ctx, event.Topic, event.EventKey, event.Payload); err != nil {
 								log.Printf("[outboxWorker %d ERROR] failed to publish event ID %v: %v", workerID, event.ID, err)
 								continue
 							}
@@ -154,7 +154,12 @@ func main() {
 		topicStatus = "orders.status.updates"
 	}
 
-	kafkaProducer, err := kafka.NewProducer(kafkaAddr, topicOrders)
+	topicCancel := os.Getenv("TOPIC_CANCEL")
+	if topicCancel == "" {
+		topicCancel = "orders.cancelled"
+	}
+
+	kafkaProducer, err := kafka.NewProducer(kafkaAddr)
 	if err != nil {
 		log.Fatalf("failed to init kafka producer: %v", err)
 	}
@@ -166,7 +171,7 @@ func main() {
 	}
 	defer kafkaConsumer.Close() //nolint:errcheck
 
-	repo := repository.NewRepo(dbPool, topicStatus, topicOrders)
+	repo := repository.NewRepo(dbPool, topicStatus, topicOrders, topicCancel)
 	orderService := domain.NewOrderService(repo)
 	partnerService := domain.NewPartnerService(repo)
 
