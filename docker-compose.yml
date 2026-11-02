@@ -91,6 +91,7 @@ services:
       - DB_PASSWORD=${POSTGRES_PASSWORD}
       - DB_NAME=${POSTGRES_DB}
       - PORT=8080
+      - GRPC_PORT=50051
       - TOPIC_ORDERS=orders.created
       - TOPIC_STATUS=orders.status.updates
       - TOPIC_CANCEL=orders.cancelled
@@ -118,6 +119,7 @@ services:
       - TOPIC_STATUS=orders.status.updates
       - TOPIC_CANCEL=orders.cancelled
       - KAFKA_ADDR=kafkasvc:9092
+      - GRPC_ADDR=kitchen-api:50051
     depends_on:
       kitchen-api:
         condition: service_started

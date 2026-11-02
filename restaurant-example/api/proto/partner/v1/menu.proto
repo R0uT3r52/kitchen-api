@@ -1,0 +1,26 @@
+syntax = "proto3";
+package partner.v1;
+
+
+option go_package = "kitchen-api/api/proto/partner/v1;partnerv1";
+
+service MenuService {
+    rpc SyncMenu(SyncMenuRequest) returns (SyncMenuResponse);
+}
+
+message MenuItem {
+    string external_id = 1;
+    string name = 2;
+    int64 price_cents = 3;
+    bool is_available = 4;
+}
+
+message SyncMenuRequest {
+    repeated MenuItem items = 1;
+}
+
+message SyncMenuResponse {
+    string status = 1;
+    string message = 2;
+    int32 count = 3;
+}
