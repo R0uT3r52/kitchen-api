@@ -20,6 +20,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -120,6 +121,38 @@ func waitKitchenAPI(ctx context.Context, client *http.Client, apiURL string, tim
 		case t := <-ticker.C:
 			if t.After(deadline) {
 				return fmt.Errorf("kitchen-api not reachable at %s within %v", endpoint, timeout)
+			}
+		}
+	}
+}
+
+func waitKitchenAPIGRPC(ctx context.Context, conn *grpc.ClientConn, timeout time.Duration) error {
+	healthClient := grpc_health_v1.NewHealthClient(conn)
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		resp, err := healthClient.Check(checkCtx, &grpc_health_v1.HealthCheckRequest{})
+		cancel()
+
+		if err == nil && resp.GetStatus() == grpc_health_v1.HealthCheckResponse_SERVING {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("gRPC health status is %s", resp.GetStatus())
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case t := <-ticker.C:
+			if t.After(deadline) {
+				return fmt.Errorf("kitchen-api gRPC not healthy within %v: %w", timeout, lastErr)
 			}
 		}
 	}
@@ -346,9 +379,14 @@ func main() {
 
 	client := partnerv1.NewMenuServiceClient(conn)
 
-	log.Println("Waiting for kitchen-api readiness...")
+	log.Println("Waiting for kitchen-api readiness (HTTP)...")
 	if err := waitKitchenAPI(ctx, httpClient, apiURL, 30*time.Second); err != nil {
-		log.Fatalf("failed waiting for kitchen-api: %v", err)
+		log.Fatalf("failed waiting for kitchen-api HTTP: %v", err)
+	}
+
+	log.Println("Waiting for kitchen-api readiness (gRPC)...")
+	if err := waitKitchenAPIGRPC(ctx, conn, 30*time.Second); err != nil {
+		log.Fatalf("failed waiting for kitchen-api gRPC: %v", err)
 	}
 	log.Println("kitchen-api is ready!")
 

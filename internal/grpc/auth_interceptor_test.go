@@ -54,13 +54,14 @@ func TestUnaryAuthInterceptor(t *testing.T) {
 		return "ok", nil
 	}
 
-	info := &grpc.UnaryServerInfo{
+	defaultInfo := &grpc.UnaryServerInfo{
 		FullMethod: "/partner.v1.MenuService/SyncMenu",
 	}
 
 	tests := []struct {
 		name          string
 		ctx           context.Context
+		serverInfo    *grpc.UnaryServerInfo
 		mock          *mockPartnerUseCase
 		expectedCode  codes.Code
 		expectedRest  int64
@@ -144,23 +145,40 @@ func TestUnaryAuthInterceptor(t *testing.T) {
 			expectedRest:  42,
 			handlerCalled: true,
 		},
+		{
+			name: "health check method bypasses authentication",
+			ctx:  context.Background(),
+			serverInfo: &grpc.UnaryServerInfo{
+				FullMethod: "/grpc.health.v1.Health/Check",
+			},
+			mock:          &mockPartnerUseCase{},
+			expectedCode:  codes.OK,
+			handlerCalled: true,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			interceptor := appgrpc.UnaryAuthInterceptor(tc.mock)
 
+			currentInfo := defaultInfo
+			if tc.serverInfo != nil {
+				currentInfo = tc.serverInfo
+			}
+
 			called := false
 			handler := func(ctx context.Context, req any) (any, error) {
 				called = true
-				restID, ok := appgrpc.RestaurantIDFromContext(ctx)
-				if !ok || restID != tc.expectedRest {
-					t.Fatalf("expected restaurant ID %d, got %d (ok=%v)", tc.expectedRest, restID, ok)
+				if tc.expectedRest > 0 {
+					restID, ok := appgrpc.RestaurantIDFromContext(ctx)
+					if !ok || restID != tc.expectedRest {
+						t.Fatalf("expected restaurant ID %d, got %d (ok=%v)", tc.expectedRest, restID, ok)
+					}
 				}
 				return dummyHandler(ctx, req)
 			}
 
-			resp, err := interceptor(tc.ctx, "test_req", info, handler)
+			resp, err := interceptor(tc.ctx, "test_req", currentInfo, handler)
 			st, _ := status.FromError(err)
 
 			if st.Code() != tc.expectedCode {

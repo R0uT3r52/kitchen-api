@@ -37,6 +37,11 @@ func UnaryAuthInterceptor(partnerService domain.PartnerUseCase) grpc.UnaryServer
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
+		// health check calls without authentication
+		if info != nil && strings.HasPrefix(info.FullMethod, "/grpc.health.v1.Health/") {
+			return handler(ctx, req)
+		}
+
 		md, ok := metadata.FromIncomingContext(ctx)
 		if !ok {
 			return nil, status.Error(codes.Unauthenticated, "missing metadata")
