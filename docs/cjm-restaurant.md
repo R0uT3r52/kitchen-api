@@ -10,8 +10,12 @@ sequenceDiagram
     participant A as Kitchen API
 
     R->>RS: запуск сервиса (конфиг, api_key)
-    RS->>A: PUT /api/v1/partner/menu (REST)
-    A-->>RS: 200 OK (меню синхронизировано)
+    loop Проверка готовности (gRPC Health Check)
+        RS->>A: Check() [grpc.health.v1.Health]
+        A-->>RS: SERVING
+    end
+    RS->>A: SyncMenu(items) [gRPC :50051, x-api-key]
+    A-->>RS: SyncMenuResponse {status: "ok", count: N}
 
     Note over K,RS: Подписка на топики orders.created и orders.cancelled
 
@@ -40,14 +44,14 @@ sequenceDiagram
 
     opt Обновление меню / Стоп-лист
         R->>RS: блюдо закончилось на кухне
-        RS->>A: PUT /api/v1/partner/menu (is_available=false для позиции)
-        A-->>RS: 200 OK (меню обновлено)
+        RS->>A: SyncMenu(items) [gRPC] / PUT /api/v1/partner/menu [REST]
+        A-->>RS: OK (меню обновлено)
     end
 ```
 
 ### Пояснения к сценарию
 
-1. **Синхронизация меню**: при старте сервис кухни отправляет текущее меню через идемпотентный REST-запрос (`PUT /api/v1/partner/menu`) с заголовком `X-API-KEY`.
+1. **Синхронизация меню**: при старте сервис кухни ожидает готовности gRPC-сервера через стандартный протокол `grpc.health.v1` и отправляет текущее меню через метод `SyncMenu` (gRPC на порту `:50051`) с передачей ключа в метаданных `x-api-key`. В качестве обратной совместимости также поддерживается идемпотентный REST-запрос (`PUT /api/v1/partner/menu`) с заголовком `X-API-KEY`.
 2. **Получение заказов и отмен**: вместо постоянных HTTP-запросов (поллинга) кухня подписана на топики Kafka `orders.created` (создание заказов) и `orders.cancelled` (отмена заказов) и обрабатывает события асинхронно.
 3. **Обновление статусов**: кухня публикует этапы готовки (`accepted -> cooking -> ready -> completed`) в топик Kafka `orders.status.updates`. Воркер `kitchen-api` считывает их и обновляет запись в базе данных.
 4. **Обработка отмены заказа и защита FSM**: при отмене заказа клиентом событие через Outbox попадает в топик `orders.cancelled`. Сервис кухни по вычитке отмены вызывает `cancelFunc()` контекста активного заказа, немедленно прерывая горутину готовки и прекращая отправку статусов в API. Если статус `accepted` уже успел отправиться до обработки отмены, воркер `kitchen-api` защищён конечным автоматом (FSM) и сохраняет статус `cancelled`.
