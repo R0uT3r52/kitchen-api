@@ -5,16 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"kitchen-api/internal/domain"
+	appgrpc "kitchen-api/internal/grpc"
 	"kitchen-api/internal/kafka"
 	"kitchen-api/internal/repository"
 	"kitchen-api/internal/web"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
+
+	"google.golang.org/grpc"
 )
 
 func outboxWorkers(ctx context.Context, workersWg *sync.WaitGroup, numWorkers int, repo *repository.Repo, producer *kafka.Producer) {
@@ -133,6 +137,11 @@ func main() {
 		port = "8080"
 	}
 
+	grpcPort := os.Getenv("GRPC_PORT")
+	if grpcPort == "" {
+		grpcPort = "50051"
+	}
+
 	dbPool, err := repository.GetDB(context.Background())
 	if err != nil {
 		log.Fatalf("failed to init db: %v", err)
@@ -184,6 +193,20 @@ func main() {
 		WriteTimeout: 10 * time.Second,
 	}
 
+	gserver := appgrpc.NewServer(partnerService)
+
+	lis, err := net.Listen("tcp", ":"+grpcPort)
+	if err != nil {
+		log.Fatalf("Failed to create listener: %v", err)
+	}
+
+	go func() {
+		log.Printf("gRPC server started at port: %s", grpcPort)
+		if err := gserver.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			log.Fatalf("gRPC server error after startup: %v", err)
+		}
+	}()
+
 	go func() {
 		log.Printf("kitchen-api starting on port %s", port)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -212,5 +235,7 @@ func main() {
 		log.Printf("server forced to shutdown: %v", err)
 	}
 	workersWg.Wait()
+	log.Println("Stopping gRPC server...")
+	gserver.GracefulStop()
 	log.Println("kitchen-api stopped")
 }

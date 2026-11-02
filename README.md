@@ -9,13 +9,14 @@
   - Оформление заказа с валидацией позиций и серверным расчетом стоимости (Snapshot Pricing).
   - Просмотр деталей и истории заказов покупателя (`user_id`).
   - Отмена заказа клиентом до момента начала приготовления.
-- **Партнерская интеграция и EDA (Apache Kafka + REST)**:
-  - Аутентификация заведений по закрытому API-ключу (`X-API-KEY`).
-  - Синхронизация меню заведения через идемпотентный REST-эндпоинт (`PUT /api/v1/partner/menu`, `UPSERT`).
+- **Партнерская интеграция и EDA (gRPC + Apache Kafka + REST)**:
+  - Аутентификация заведений по закрытому API-ключу (`X-API-KEY` в HTTP / `x-api-key` в gRPC metadata).
+  - Пакетная синхронизация меню заведения через gRPC (`SyncMenu`, порт `:50051`, Protobuf).
+  - Проверка готовности сервера через стандартный gRPC Health Checking Protocol (`grpc.health.v1`).
   - Асинхронная отправка новых заказов на кухню через топик Kafka `orders.created`.
   - Асинхронное оповещение кухни об отмене заказа через топик Kafka `orders.cancelled`.
   - Асинхронное получение статусов приготовления от кухни через топик Kafka `orders.status.updates`.
-  - Fallback REST-эндпоинты для просмотра заказов и смены статуса (`GET /api/v1/partner/orders`, `PATCH /api/v1/partner/orders/{id}/status`).
+  - Fallback REST-эндпоинты для просмотра заказов, смены статуса и обновления меню (`PUT /api/v1/partner/menu`, `GET /api/v1/partner/orders`, `PATCH /api/v1/partner/orders/{id}/status`).
 - **Паттерн Transactional Outbox**:
   - Атомарное сохранение заказа и события в таблицу `outbox_events` в единой транзакции PostgreSQL.
   - Фоновый воркер с конкурентной выборкой (`FOR UPDATE SKIP LOCKED`) для надежной отправки событий в Kafka без проблемы dual-write.
@@ -24,14 +25,14 @@
 - **Аудит изменений (Audit Trail)**:
   - Версионирование смены статусов заказа в таблице `order_events` для истории и аналитики.
 - **Автономный микросервис партнера (`restaurant-example`)**:
-  - Готовая симуляция кухни заведения: синхронизирует меню по REST, слушает топики `orders.created` и `orders.cancelled`, параллельно в горутинах меняет статусы приготовления, мгновенно прерывает готовку при отмене, отправляет их в Kafka и поддерживает graceful shutdown.
+  - Готовая симуляция кухни заведения: проверяет gRPC healthcheck, синхронизирует меню по gRPC, слушает топики `orders.created` и `orders.cancelled`, параллельно в горутинах меняет статусы приготовления, мгновенно прерывает готовку при отмене, отправляет их в Kafka и поддерживает graceful shutdown.
 
 ## Architecture
 
-Сервис спроектирован по принципам чистой архитектуры (Clean Architecture): **Web** -> **Domain** <- **Repository**.
+Сервис спроектирован по принципам чистой архитектуры (Clean Architecture): **Web / gRPC** -> **Domain** <- **Repository**.
 - **Domain**: изолированная бизнес-логика (`OrderService`, `PartnerService`), FSM-переходы и интерфейсы репозиториев.
 - **Repository**: реализация на `jackc/pgx/v5` с транзакционным сохранением заказов, блокировками строк и очередью outbox.
-- **Web**: HTTP-хендлеры, DTO, middleware авторизации.
+- **Web & gRPC**: HTTP-хендлеры и gRPC-сервер (`MenuService`, `HealthService`), DTO/Protobuf, middleware/интерцепторы авторизации.
 - **Kafka & Workers**: фоновые пулы воркеров (`outboxWorkers` и `ordersWorkers`) для асинхронного взаимодействия с брокером Apache Kafka.
 
 > Подробные диаграммы доступны в каталоге [`docs/`](docs/):
@@ -67,6 +68,16 @@
 | `GET` | `/api/v1/partner/orders` | `X-API-KEY` | Заказы ресторана (фильтр по `status`) |
 | `PATCH` | `/api/v1/partner/orders/{id}/status` | `X-API-KEY` | Обновление статуса заказа заведением |
 
+### gRPC API (порт `:50051`)
+
+Спецификация контракта: **[api/proto/partner/v1/menu.proto](api/proto/partner/v1/menu.proto)**
+
+| Сервис | Метод | Метаданные (Auth) | Описание |
+| :--- | :--- | :--- | :--- |
+| `partner.v1.MenuService` | `SyncMenu` | `x-api-key` | Пакетный upsert позиций меню заведения |
+| `grpc.health.v1.Health` | `Check` | — | Проверка готовности сервера (Health Check) |
+| `grpc.health.v1.Health` | `Watch` | — | Потоковое отслеживание готовности сервера |
+
 ### Топики Apache Kafka (EDA)
 
 | Топик | Отправитель | Получатель | Ключ сообщения | Описание |
@@ -84,6 +95,9 @@
 - **Web Layer (`internal/web`)**:
   - Тестирование HTTP-хендлеров через `httptest`.
   - Проверка валидации DTO, middleware авторизации по `X-API-KEY`, статус-кодов.
+- **gRPC Layer (`internal/grpc`)**:
+  - Тестирование интерцептора аутентификации `UnaryAuthInterceptor` (проверка ключа, неактивные рестораны, пропуск healthcheck).
+  - Тестирование `MenuServer` и маппинга ошибок домена в gRPC-коды.
 
 ### Integration Tests (Testcontainers)
 - **Repository Layer (`internal/repository`)**:
@@ -98,7 +112,7 @@
 go test -v ./...
 
 # Запуск только unit-тестов
-go test -v ./internal/domain/... ./internal/web/...
+go test -v ./internal/domain/... ./internal/web/... ./internal/grpc/...
 
 # Запуск интеграционных тестов репозитория
 go test -v ./internal/repository/...
@@ -129,8 +143,8 @@ docker compose up --build
 2. `kafkasvc` — брокер Apache Kafka.
 3. `migrate` — применение SQL-миграций к БД.
 4. `kafka-init` — автоматическое создание топиков `orders.created`, `orders.status.updates` и `orders.cancelled`.
-5. `kitchen-api` — основной бэкенд-сервис на порту `8080`.
-6. `restaurant-example` — сервис кухни заведения (синхронизирует меню и слушает заказы из Kafka).
+5. `kitchen-api` — основной бэкенд-сервис на портах `8080` (HTTP) и `50051` (gRPC).
+6. `restaurant-example` — сервис кухни заведения (проверяет gRPC readiness, синхронизирует меню по gRPC и слушает заказы из Kafka).
 
 Для остановки:
 ```bash

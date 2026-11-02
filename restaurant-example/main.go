@@ -2,22 +2,26 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	partnerv1 "restaurant-example/api/proto/partner/v1"
 	"restaurant-example/kafka"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/metadata"
 )
 
 type MenuItemDTO struct {
@@ -122,29 +126,59 @@ func waitKitchenAPI(ctx context.Context, client *http.Client, apiURL string, tim
 	}
 }
 
-func syncMenu(ctx context.Context, client *http.Client, apiURL, apiKey string, items []MenuItemDTO) error {
-	payload, err := json.Marshal(UpsertMenuRequest{Items: items})
-	if err != nil {
-		return fmt.Errorf("failed to marshal menu: %w", err)
+func waitKitchenAPIGRPC(ctx context.Context, conn *grpc.ClientConn, timeout time.Duration) error {
+	healthClient := grpc_health_v1.NewHealthClient(conn)
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		resp, err := healthClient.Check(checkCtx, &grpc_health_v1.HealthCheckRequest{})
+		cancel()
+
+		if err == nil && resp.GetStatus() == grpc_health_v1.HealthCheckResponse_SERVING {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("gRPC health status is %s", resp.GetStatus())
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case t := <-ticker.C:
+			if t.After(deadline) {
+				return fmt.Errorf("kitchen-api gRPC not healthy within %v: %w", timeout, lastErr)
+			}
+		}
+	}
+}
+
+func syncMenuGRPC(ctx context.Context, client partnerv1.MenuServiceClient, apiKey string, items []MenuItemDTO) error {
+	newCtx := metadata.AppendToOutgoingContext(ctx, "x-api-key", apiKey)
+
+	syncCtx, cancel := context.WithTimeout(newCtx, 5*time.Second)
+	defer cancel()
+
+	data := make([]*partnerv1.MenuItem, 0, len(items))
+	for i := range items {
+		data = append(data, &partnerv1.MenuItem{
+			ExternalId:  items[i].ExternalID,
+			Name:        items[i].Name,
+			PriceCents:  items[i].PriceCents,
+			IsAvailable: items[i].IsAvailable,
+		})
 	}
 
-	endpoint := strings.TrimRight(apiURL, "/") + "/api/v1/partner/menu"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(payload))
+	_, err := client.SyncMenu(syncCtx, &partnerv1.SyncMenuRequest{
+		Items: data,
+	})
 	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-KEY", apiKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("menu sync request failed: %w", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("menu sync request failed: %v", err)
 	}
 
 	return nil
@@ -324,6 +358,7 @@ func main() {
 	statusTopic := getEnv("TOPIC_STATUS", "orders.status.updates")
 	cancelTopic := getEnv("TOPIC_CANCEL", "orders.cancelled")
 	consumerGroupID := getEnv("KAFKA_GROUP_ID", "restaurant-example-dominos")
+	grpcAddr := getEnv("GRPC_ADDR", "localhost:50051")
 
 	log.Printf("restaurant-example started for api_url=%s, api_key=%s, step_delay=%v, kafka_addr=%s, orders_topic=%s, status_topic=%s, cancel_topic=%s",
 		apiURL, apiKey, stepDelay, kafkaAddr, ordersTopic, statusTopic, cancelTopic)
@@ -333,15 +368,31 @@ func main() {
 
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 
-	log.Println("Waiting for kitchen-api readiness...")
+	conn, err := grpc.NewClient(
+		grpcAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		log.Fatalf("Failed to create connection to gRPC server: %v", err)
+	}
+	defer conn.Close() //nolint:errcheck
+
+	client := partnerv1.NewMenuServiceClient(conn)
+
+	log.Println("Waiting for kitchen-api readiness (HTTP)...")
 	if err := waitKitchenAPI(ctx, httpClient, apiURL, 30*time.Second); err != nil {
-		log.Fatalf("failed waiting for kitchen-api: %v", err)
+		log.Fatalf("failed waiting for kitchen-api HTTP: %v", err)
+	}
+
+	log.Println("Waiting for kitchen-api readiness (gRPC)...")
+	if err := waitKitchenAPIGRPC(ctx, conn, 30*time.Second); err != nil {
+		log.Fatalf("failed waiting for kitchen-api gRPC: %v", err)
 	}
 	log.Println("kitchen-api is ready!")
 
 	log.Printf("Synchronizing menu (%d items)...", len(initialMenu))
-	if err := syncMenu(ctx, httpClient, apiURL, apiKey, initialMenu); err != nil {
-		log.Fatalf("failed to sync menu: %v", err)
+	if err := syncMenuGRPC(ctx, client, apiKey, initialMenu); err != nil {
+		log.Fatalf("failed to synchronize menu: %v", err)
 	}
 	log.Println("Menu synchronized successfully!")
 
